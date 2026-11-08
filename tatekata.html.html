@@ -12,7 +12,7 @@
 // ★重要：更新をデプロイして反映を確認したら、必ずこの値を変更してください（日付や連番など何でもOK）。
 // 開いている全員の画面が、この値の変化を数分おきに自動検知して、勝手に再読み込みしてくれます。
 // （「リロードしてください」と一人ずつ声をかけなくても、自動で最新版に切り替わる仕組みです）
-const BUILD_VERSION = '2026-11-07-08';
+const BUILD_VERSION = '2026-11-09-01';
 
 firebase.initializeApp({
   apiKey: "AIzaSyD_yVJymE0OR8LjEAYwt0-5XBuNOQ4K3-s",
@@ -3205,7 +3205,7 @@ firebase.initializeApp({
     <button class="btn btn-primary" onclick="openMitsumoriNew('uke')" style="font-size:13px;">＋ 請け見積り作成</button>
     <button class="btn btn-secondary" onclick="openMitsumoriNew('jinko')" style="font-size:13px;">＋ 人工見積り作成</button>
     <button class="btn btn-secondary" onclick="openCompanyInfoModal()" style="font-size:13px;">🏦 帳票の会社情報・振込先</button>
-    <button class="btn btn-secondary" onclick="exportMitsumoriListCsv()" style="font-size:13px;">📊 絞り込み結果を一括CSV出力</button>
+    <!-- 2026-11-09：楽楽明細CSVは請求アラートの「🧾 請求書」から出すため、一括CSV出力のボタンは外した -->
     <div style="margin-left:auto;display:flex;gap:4px;">
       <button id="mtViewCard" onclick="setMtView('card')" style="padding:5px 12px;font-size:12px;border-radius:6px 0 0 6px;border:1px solid var(--border);background:var(--accent);color:#000;font-weight:700;cursor:pointer;">☰ カード</button>
       <button id="mtViewTable" onclick="setMtView('table')" style="padding:5px 12px;font-size:12px;border-radius:0 6px 6px 0;border:1px solid var(--border);border-left:none;background:var(--surface);color:var(--text-muted);cursor:pointer;">▦ テーブル</button>
@@ -5655,7 +5655,7 @@ let kobetsuOrderData = _safeParse('tatekata_kobetsu_order', []);
 //   dekidakaFlag[請求キー] = true                … 出来高の物件として管理する印
 //   dekidaka[請求キー][YYYY-MM] = { uriage:{date}, seikyu:{date} } … 出来高の月ごとの売上依頼・請求
 // 請求キーは seikyuData と同じ（取引先|||物件名、その他工程だけの物件は |||最初の日付 付き）
-function _beNorm(v) { v = (v && typeof v === 'object') ? v : {}; return { nyukin: v.nyukin || {}, dekidakaFlag: v.dekidakaFlag || {}, dekidaka: v.dekidaka || {} }; }
+function _beNorm(v) { v = (v && typeof v === 'object') ? v : {}; return { nyukin: v.nyukin || {}, dekidakaFlag: v.dekidakaFlag || {}, dekidaka: v.dekidaka || {}, invoices: Array.isArray(v.invoices) ? v.invoices : [] }; } // invoices：請求書の記録（2026-11-09）
 let billingExtData = _beNorm(_safeParse('tatekata_billing_ext', {}));
 function saveBillingExt() { cloudStorage.setItem('tatekata_billing_ext', JSON.stringify(billingExtData)); }
 // 分裂グループ統合ツール：「統合しない（別の工事）」にした物件 { "取引先|||物件名": "groupIdの組み合わせ" }（全員で共有）
@@ -15528,7 +15528,337 @@ function _baApplyDone(card, items) {
   if (typeof renderBukkenListKeepState === 'function') { try { renderBukkenListKeepState(); } catch (e) {} }
 }
 
+// ===== 請求書の作成・記録（2026-11-09・設計：claude/seikyusho_spec.md） =====
+// 請求書を出す入口はここ1か所。請求書は billingExtData.invoices に記録する
+//   invoice = { id:'ARK-2611-0001', csvNo:'8261120001', kaisha, trId, torihiki, shime:'YYYY-MM-DD', status:'draft'|'csv'|'fixed',
+//               createdAt, csvAt, fixedAt, seikyuDate, early:boolean, items:[{ key, kind:'job'|'deki'|'chousei', sKey, dekiYm, chouseiId, bukken, torihiki, amount, start, done }] }
+//   ・明細キー：J|請求キー（物件）／D|請求キー|年月（出来高）／C|売上調整id
+//   ・下書き・CSV出力済の請求書に入っている売上は、新しい請求書に集めない
+//   ・確定したら、これまでの「請求済」の印（seikyuData・出来高の月ごと・売上調整の c.seikyu）も付ける
+//   ・これまでに請求済の印がある売上は「請求済（請求書番号なし）」として集めない
+//   ・前金の取引先は対象外（施工前の請求依頼・入金確認は請求アラートの前金カードのまま）
+const INV_FROM = '2026-10-01'; // これより前に完工した未請求は集めない（過去分に請求済の印が無いものが多いため）
+const INV_ST = { draft: { label: '下書き', color: '#f57c00' }, csv: { label: 'CSV出力済', color: '#1976d2' }, fixed: { label: '確定', color: '#2e7d32' } };
+function _invAll() { if (!Array.isArray(billingExtData.invoices)) billingExtData.invoices = []; return billingExtData.invoices; }
+function _invUsedKeys(exceptId) {
+  const s = new Map();
+  _invAll().forEach(inv => { if (inv.id === exceptId) return; (inv.items || []).forEach(it => s.set(it.key, inv)); });
+  return s;
+}
+// 今日までに来た直近の締め日（締め日当日を含む）
+function _invLastShime(cd, today) {
+  const [y, m, d] = today.split('-').map(Number);
+  const pad = n => String(n).padStart(2, '0');
+  if (cd === 0) {
+    const last = _baLastDay(y, m);
+    if (d === last) return today;
+    const py = m === 1 ? y - 1 : y, pm = m === 1 ? 12 : m - 1;
+    return `${py}-${pad(pm)}-${pad(_baLastDay(py, pm))}`;
+  }
+  const dd = Math.min(cd, _baLastDay(y, m));
+  if (d >= dd) return `${y}-${pad(m)}-${pad(dd)}`;
+  const py = m === 1 ? y - 1 : y, pm = m === 1 ? 12 : m - 1;
+  return `${py}-${pad(pm)}-${pad(Math.min(cd, _baLastDay(py, pm)))}`;
+}
+// まだどの請求書にも入っていない売上（請求済の印も無いもの）を集める
+function _invCollect() {
+  const saved = currentKaisha;
+  let jobs;
+  try { currentKaisha = 'both'; jobs = _baCollectJobs(''); } finally { currentKaisha = saved; }
+  const used = _invUsedKeys();
+  const out = [], noClose = [];
+  let oldCount = 0;
+  jobs.forEach(j => {
+    if (!j.tr || j.zenkin) return;
+    const cd = _baCloseDay(j.tr);
+    const push = (it, deferDate, stDone) => {
+      if (stDone || used.has(it.key)) return;
+      if (it.done < INV_FROM) { oldCount++; return; }
+      if (cd === null) { noClose.push(it); return; }
+      let dl = _baBuckets(it.done, cd).sDeadline;
+      if (deferDate && deferDate.slice(0, 7) >= dl.slice(0, 7)) dl = _baBuckets(_baAddDays(deferDate > dl ? deferDate : dl, 1), cd).sDeadline;
+      out.push({ ...it, dl, tr: j.tr, kaisha: j.kaisha, cd });
+    };
+    const base = { sKey: j.sKey, bukken: j.bukken, torihiki: j.torihiki };
+    if (j.chouseiId != null) {
+      push({ ...base, key: `C|${j.chouseiId}`, kind: 'chousei', chouseiId: j.chouseiId, amount: j.amount, start: j.done, done: j.done }, j.seikyuDeferDate, j.seikyuDone);
+    } else if (j.dekidaka) {
+      j.dekiMonths.forEach(dm => push({ ...base, key: `D|${j.sKey}|${dm.ym}`, kind: 'deki', dekiYm: dm.ym, amount: dm.amount, start: dm.lastWork, done: dm.lastWork }, '', dm.seikyuDone));
+    } else {
+      push({ ...base, key: `J|${j.sKey}`, kind: 'job', amount: j.amount, start: j.start, done: j.done }, j.seikyuDeferDate, j.seikyuDone);
+    }
+  });
+  return { items: out, noClose, oldCount };
+}
+// 請求書の候補（取引先・会社・締め日ごと。「物件ごとに1枚」の取引先は1件ずつ）
+//   early=false：今日までに来た直近の締め日まで／early=true：次の締め日まで（締め日前に作る＝注意）
+function _invCandidates(early) {
+  const today = _baYmd(new Date());
+  const { items, noClose, oldCount } = _invCollect();
+  const groups = new Map();
+  let later = 0;
+  items.forEach(it => {
+    // 締め日が来た分は直近の締め日で。「締め日前も含める」のときだけ、まだの分を次の締め日で（注意つき）
+    const last = _invLastShime(it.cd, today);
+    const S = it.dl <= last ? last : (early ? _baBuckets(today, it.cd).sDeadline : null);
+    if (!S || it.dl > S) { later++; return; }
+    const per = (it.tr.seikyusaki || {}).matome === 'bukken';
+    const gk = `${it.kaisha}|${it.tr.id}|${S}${per ? '|' + it.key : ''}`;
+    if (!groups.has(gk)) groups.set(gk, { gk, kaisha: it.kaisha, tr: it.tr, shime: S, early: S > today, items: [] });
+    groups.get(gk).items.push(it);
+  });
+  const list = [...groups.values()].map(g => {
+    g.items.sort((a, b) => a.done.localeCompare(b.done));
+    g.total = g.items.reduce((s, it) => s + it.amount, 0);
+    g.prev = g.items.filter(it => it.dl < g.shime).length; // 前回以前の締めの分（漏れていた分）
+    return g;
+  }).sort((a, b) => a.shime.localeCompare(b.shime) || a.tr.name.localeCompare(b.tr.name, 'ja'));
+  return { list, noClose, oldCount, later };
+}
+function _invNewNo(kaisha, shime) {
+  const pre = kaisha === 'TWW' ? 'TWW' : kaisha === 'ARK' ? 'ARK' : String(kaisha || '').replace(/\//g, '');
+  const yymm = shime.slice(2, 4) + shime.slice(5, 7);
+  const head = `${pre}-${yymm}-`;
+  const seq = _invAll().filter(v => v.id.startsWith(head)).reduce((mx, v) => Math.max(mx, parseInt(v.id.slice(head.length)) || 0), 0) + 1;
+  const kd = { TWW: '1', ARK: '2' }[kaisha] || '3';
+  return { id: `${head}${String(seq).padStart(4, '0')}`, csvNo: `8${yymm}${kd}${String(seq).padStart(4, '0')}` };
+}
+const _invEsc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+function _invKaishaBadge(k) {
+  const col = k === 'ARK' ? '#2e7d32' : k === 'TWW' ? '#1976d2' : '#7b1fa2';
+  return `<span style="font-size:10px;font-weight:900;color:#fff;background:${col};border-radius:4px;padding:1px 6px;">${_invEsc(k)}</span>`;
+}
+function _invModal(id, title, body, width) {
+  let ov = document.getElementById(id);
+  if (!ov) { ov = document.createElement('div'); ov.className = 'modal-overlay'; ov.id = id; document.body.appendChild(ov); }
+  ov.innerHTML = `<div class="modal" style="max-width:${width || 640}px;"><div class="modal-title"><span>${title}</span><button class="modal-close" onclick="document.getElementById('${id}').classList.remove('open')">✕</button></div>${body}</div>`;
+  ov.classList.add('open');
+  return ov;
+}
+
+// ── ① 請求書を作る（候補の一覧 → 下書き）
+function openInvoiceCreate(early) {
+  const c = _invCandidates(!!early);
+  window._invCand = c;
+  const today = _baYmd(new Date());
+  const rows = c.list.map((g, i) => {
+    const hik = (g.tr.seikyusaki || {}).hikkaku;
+    const per = (g.tr.seikyusaki || {}).matome === 'bukken';
+    return `<label style="display:flex;gap:8px;align-items:flex-start;padding:8px 4px;border-bottom:1px solid var(--border);font-size:12px;cursor:pointer;">
+      <input type="checkbox" class="inv-cand" data-i="${i}" checked style="width:16px;height:16px;margin-top:2px;flex-shrink:0;">
+      <span style="flex:1;min-width:0;">
+        ${_invKaishaBadge(g.kaisha)} <b style="font-size:13px;">${_invEsc(g.tr.name)}</b>
+        <span style="color:var(--text-muted);">${_baMd(g.shime)}締め${per ? '・物件ごと' : ''}${hik ? '・' + _invEsc(hik) : ''}</span>
+        ${g.early ? `<span style="display:block;color:#e53935;font-weight:700;">⚠️ 締め日（${_baMd(g.shime)}）より前です。このあと同じ締めで完工する分は入りません</span>` : ''}
+        ${g.prev ? `<span style="display:block;color:#f57c00;font-weight:700;">⚠️ 前回以前の締めの分（漏れていた分）が${g.prev}件入っています</span>` : ''}
+        <span style="display:block;color:var(--text-muted);font-size:11px;">${g.items.map(it => _invEsc(it.bukken) + (it.dekiYm ? `（${parseInt(it.dekiYm.slice(5))}月出来高）` : '')).join('、')}</span>
+      </span>
+      <span style="white-space:nowrap;text-align:right;"><b>${g.items.length}件</b><br><span style="font-family:'DM Mono',monospace;">${formatMoney(g.total)}</span></span>
+    </label>`;
+  }).join('');
+  const nc = c.noClose.length ? `<div style="font-size:11px;color:#f57c00;margin-top:8px;">⚠️ 締め日が未設定の取引先の未請求 ${c.noClose.length}件（取引先管理で締め日を設定すると、ここに出ます）：${[...new Set(c.noClose.map(x => x.torihiki))].map(_invEsc).join('、')}</div>` : '';
+  _invModal('invCreateModal', '🧾 請求書を作る', `
+    <div style="font-size:12px;color:var(--text-muted);margin-bottom:6px;">今日（${_baMd(today)}）までに締め日が来た取引先の、まだ請求書に入っていない売上です。チェックした取引先の請求書（下書き）を作ります。中身は次の画面で確認・調整できます。<br>
+      ※前金の取引先は対象外（請求アラートの前金カードで管理）。${_baMd(INV_FROM)}より前に完工した未請求は集めません${c.oldCount ? `（${c.oldCount}件）` : ''}。</div>
+    <label style="display:flex;align-items:center;gap:6px;font-size:12px;margin-bottom:6px;cursor:pointer;">
+      <input type="checkbox" ${early ? 'checked' : ''} onchange="openInvoiceCreate(this.checked)" style="width:16px;height:16px;"> 締め日前の分も含める（次の締め日まで。⚠️注意して使う）
+    </label>
+    <div style="max-height:55vh;overflow-y:auto;">${rows || '<div style="font-size:13px;color:var(--text-muted);padding:12px 0;">作れる請求書はありません</div>'}</div>
+    ${nc}
+    ${!early && c.later ? `<div style="font-size:11px;color:var(--text-muted);margin-top:6px;">次の締め日を待っている売上：${c.later}件</div>` : ''}
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px;">
+      <button class="btn btn-secondary" onclick="document.getElementById('invCreateModal').classList.remove('open')">キャンセル</button>
+      ${c.list.length ? `<button class="btn btn-primary" onclick="execInvoiceCreate()">選んだ取引先の請求書（下書き）を作る</button>` : ''}
+    </div>`);
+}
+function execInvoiceCreate() {
+  const c = window._invCand; if (!c) return;
+  const chosen = c.list.filter((g, i) => { const cb = document.querySelector(`#invCreateModal .inv-cand[data-i="${i}"]`); return cb && cb.checked; });
+  if (!chosen.length) { showToast('⚠️ 取引先が選ばれていません', true); return; }
+  const now = new Date().toISOString();
+  const made = [];
+  chosen.forEach(g => {
+    const no = _invNewNo(g.kaisha, g.shime);
+    const inv = { ...no, kaisha: g.kaisha, trId: g.tr.id, torihiki: g.tr.name, shime: g.shime, status: 'draft', createdAt: now, early: g.early,
+      items: g.items.map(it => ({ key: it.key, kind: it.kind, sKey: it.sKey, dekiYm: it.dekiYm || null, chouseiId: it.chouseiId != null ? it.chouseiId : null,
+        bukken: it.bukken, torihiki: it.torihiki, amount: it.amount, start: it.start, done: it.done })) };
+    _invAll().push(inv);
+    made.push(inv.id);
+  });
+  saveBillingExt();
+  document.getElementById('invCreateModal').classList.remove('open');
+  showToast(`🧾 請求書（下書き）を${made.length}件作りました`);
+  if (typeof renderBillingAlert === 'function') { try { renderBillingAlert(); } catch (e) {} }
+  openInvoiceList('open');
+}
+
+// ── ② 請求書の一覧（下書き → CSV → 確定）
+function _invTr(inv) { return torihikiData.find(t => t.id === inv.trId) || _baTorihikiRec(inv.torihiki); }
+function _invTotal(inv) { const sub = inv.items.reduce((s, it) => s + (it.amount || 0), 0); return { sub, tax: Math.floor(sub * 0.1), total: sub + Math.floor(sub * 0.1) }; }
+function openInvoiceList(filter) {
+  filter = filter || window._invListFilter || 'open';
+  window._invListFilter = filter;
+  const list = _invAll().filter(v => filter === 'all' || v.status !== 'fixed').sort((a, b) => b.id.localeCompare(a.id));
+  const rows = list.map(inv => {
+    const t = _invTotal(inv), st = INV_ST[inv.status] || INV_ST.draft;
+    const items = inv.items.map(it => `<div style="display:flex;gap:6px;font-size:11px;padding:2px 0;">
+        ${inv.status === 'draft' ? `<button class="btn btn-secondary btn-sm" style="font-size:10px;padding:0 6px;" title="この売上を請求書から外す（未請求に戻る）" onclick="invRemoveItem('${inv.id}','${_invEsc(it.key).replace(/'/g, "\\'")}')">外す</button>` : ''}
+        <span style="flex:1;min-width:0;">${_invEsc(it.bukken)}${it.dekiYm ? `（${parseInt(it.dekiYm.slice(5))}月出来高）` : ''}</span>
+        <span style="color:var(--text-muted);white-space:nowrap;">${it.kind === 'chousei' ? '計上 ' + parseInt(it.done.slice(5, 7)) + '月' : '完工 ' + _baMd(it.done)}</span>
+        <span style="font-family:'DM Mono',monospace;white-space:nowrap;min-width:80px;text-align:right;">${formatMoney(it.amount)}</span>
+      </div>`).join('');
+    const btns = [];
+    if (inv.status === 'draft') btns.push(`<button class="btn btn-secondary btn-sm" style="font-size:11px;" onclick="invDelete('${inv.id}')">削除</button>`);
+    if (inv.status === 'csv') btns.push(`<button class="btn btn-secondary btn-sm" style="font-size:11px;" onclick="invSetStatus('${inv.id}','draft')">下書きに戻す</button>`);
+    if (inv.status === 'fixed') btns.push(`<button class="btn btn-secondary btn-sm" style="font-size:11px;" onclick="invUnfix('${inv.id}')">確定を取り消す</button>`);
+    return `<div style="padding:8px 4px;border-bottom:1px solid var(--border);font-size:12px;">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        ${inv.status !== 'fixed' ? `<input type="checkbox" class="inv-sel" data-id="${inv.id}" style="width:16px;height:16px;">` : ''}
+        <span style="font-family:'DM Mono',monospace;font-weight:700;">${inv.id}</span>
+        <span style="font-size:10px;font-weight:900;color:#fff;background:${st.color};border-radius:4px;padding:1px 6px;">${st.label}</span>
+        ${_invKaishaBadge(inv.kaisha)} <b>${_invEsc(inv.torihiki)}</b>
+        <span style="color:var(--text-muted);">${_baMd(inv.shime)}締め・${inv.items.length}件</span>
+        <span style="margin-left:auto;font-family:'DM Mono',monospace;font-weight:700;">${formatMoney(t.total)}<span style="font-size:10px;font-weight:400;color:var(--text-muted);">（税込）</span></span>
+      </div>
+      ${inv.early ? '<div style="color:#e53935;font-size:11px;font-weight:700;">⚠️ 締め日前に作った請求書</div>' : ''}
+      <div style="color:var(--text-muted);font-size:10px;">${inv.csvAt ? 'CSV ' + _baMd(inv.csvAt.slice(0, 10)) + '　' : ''}${inv.fixedAt ? '確定 ' + _baMd(inv.fixedAt.slice(0, 10)) + '　' : ''}楽楽明細の帳票No ${inv.csvNo}</div>
+      <details style="margin-top:2px;"><summary style="font-size:11px;color:var(--accent2);cursor:pointer;">中身（${inv.items.length}件）</summary>${items}</details>
+      ${btns.length ? `<div style="display:flex;gap:6px;justify-content:flex-end;margin-top:4px;">${btns.join('')}</div>` : ''}
+    </div>`;
+  }).join('');
+  const inp = 'padding:4px 6px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;';
+  _invModal('invListModal', '📋 請求書の一覧', `
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12px;margin-bottom:6px;">
+      <select onchange="openInvoiceList(this.value)" style="${inp}"><option value="open" ${filter === 'open' ? 'selected' : ''}>未確定（下書き・CSV出力済）</option><option value="all" ${filter === 'all' ? 'selected' : ''}>すべて（確定を含む）</option></select>
+      <button class="btn btn-secondary btn-sm" onclick="document.querySelectorAll('#invListModal .inv-sel').forEach(x=>x.checked=true)">全部選ぶ</button>
+      <button class="btn btn-primary btn-sm" onclick="document.getElementById('invListModal').classList.remove('open');openInvoiceCreate(false)">＋ 請求書を作る</button>
+    </div>
+    <div style="max-height:52vh;overflow-y:auto;">${rows || '<div style="font-size:13px;color:var(--text-muted);padding:12px 0;">請求書はありません</div>'}</div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px;padding-top:8px;border-top:1px solid var(--border);font-size:12px;">
+      <span>選んだ請求書を：</span>
+      <span>🗓️ 請求日 <input type="date" id="inv_seikyuDate" value="${_baYmd(new Date())}" style="${inp}"></span>
+      <button class="btn btn-primary btn-sm" onclick="invExportCsv()">📄 楽楽明細CSVを出力</button>
+      <button class="btn btn-secondary btn-sm" onclick="invFixSelected()">✓ 確定（楽楽明細で発行した）</button>
+    </div>
+    <div style="font-size:10px;color:var(--text-muted);margin-top:6px;">流れ：下書き →［CSVを出力］→ 楽楽明細で取り込み・発行 →［確定］。確定すると請求済になり、請求アラートから消えます。取り込み前に直したいときは［下書きに戻す］。発行した後に見つかった売上は、次の請求書に自動で入ります。</div>
+  `, 680);
+}
+function _invSelected() { return [...document.querySelectorAll('#invListModal .inv-sel:checked')].map(x => _invAll().find(v => v.id === x.dataset.id)).filter(Boolean); }
+function invRemoveItem(id, key) {
+  const inv = _invAll().find(v => v.id === id); if (!inv || inv.status !== 'draft') return;
+  inv.items = inv.items.filter(it => it.key !== key);
+  if (!inv.items.length) billingExtData.invoices = _invAll().filter(v => v !== inv);
+  saveBillingExt(); openInvoiceList(); try { renderBillingAlert(); } catch (e) {}
+}
+function invDelete(id) {
+  const inv = _invAll().find(v => v.id === id); if (!inv || inv.status !== 'draft') return;
+  if (!confirm(`${inv.id}（${inv.torihiki}）の下書きを削除します。中の売上は未請求に戻ります。よろしいですか？`)) return;
+  billingExtData.invoices = _invAll().filter(v => v !== inv);
+  saveBillingExt(); openInvoiceList(); try { renderBillingAlert(); } catch (e) {}
+}
+function invSetStatus(id, st) {
+  const inv = _invAll().find(v => v.id === id); if (!inv) return;
+  if (st === 'draft' && inv.status === 'csv' && !confirm(`${inv.id} を下書きに戻します。楽楽明細に取り込み済みなら、楽楽明細の帳票（帳票No ${inv.csvNo}）を削除してから出し直してください。`)) return;
+  inv.status = st; saveBillingExt(); openInvoiceList(); try { renderBillingAlert(); } catch (e) {}
+}
+// CSVを出す直前に、売上の金額を今の値に合わせる（下書きを作った後に売上が直された場合）
+function _invRefreshAmounts(inv) {
+  const { items } = (() => { const saved = currentKaisha; try { currentKaisha = 'both'; return { items: _baCollectJobs('') }; } finally { currentKaisha = saved; } })();
+  const cur = new Map();
+  items.forEach(j => {
+    if (j.chouseiId != null) cur.set(`C|${j.chouseiId}`, j.amount);
+    else if (j.dekidaka) j.dekiMonths.forEach(dm => cur.set(`D|${j.sKey}|${dm.ym}`, dm.amount));
+    else cur.set(`J|${j.sKey}`, j.amount);
+  });
+  const changed = [];
+  inv.items.forEach(it => { if (cur.has(it.key) && cur.get(it.key) !== it.amount) { changed.push(`${it.bukken} ${formatMoney(it.amount)}→${formatMoney(cur.get(it.key))}`); it.amount = cur.get(it.key); } });
+  return changed;
+}
+function invExportCsv() {
+  const sel = _invSelected();
+  if (!sel.length) { showToast('⚠️ 請求書が選ばれていません', true); return; }
+  const seikyuDate = document.getElementById('inv_seikyuDate').value || _baYmd(new Date());
+  const early = sel.filter(v => seikyuDate < v.shime);
+  if (early.length && !confirm(`⚠️ 請求日（${_baMd(seikyuDate)}）が締め日より前の請求書があります：\n${early.map(v => `・${v.id} ${v.torihiki}（${_baMd(v.shime)}締め）`).join('\n')}\n\nこのまま出しますか？`)) return;
+  let rows = null;
+  const changed = [], noTr = [];
+  sel.forEach(inv => {
+    const tr = _invTr(inv);
+    if (!tr) { noTr.push(inv.id); return; }
+    changed.push(..._invRefreshAmounts(inv));
+    const card = { tr, deadline: inv.shime, kaisha: inv.kaisha, items: inv.items };
+    const r = _baRakuRows(card, _baRakuParts(card), seikyuDate, inv.csvNo);
+    if (!rows) rows = r; else rows.push(...r.slice(1));
+  });
+  if (!rows) { showToast('⚠️ 取引先が見つからない請求書だけでした', true); return; }
+  const now = new Date().toISOString();
+  sel.forEach(inv => { if (noTr.includes(inv.id)) return; inv.status = inv.status === 'fixed' ? 'fixed' : 'csv'; inv.csvAt = now; inv.seikyuDate = seikyuDate; });
+  saveBillingExt();
+  _mtDownloadCsv(rows, `楽楽明細_請求書_${seikyuDate}_${sel.length}件.csv`);
+  openInvoiceList();
+  try { renderBillingAlert(); } catch (e) {}
+  if (changed.length) alert(`CSVを出しました。下書きを作った後に売上が変わっていた分は、今の金額にしています：\n${changed.join('\n')}`);
+  else showToast(`📄 ${sel.length - noTr.length}件の請求書をCSVに出しました`);
+  if (noTr.length) alert(`取引先が見つからないため出せなかった請求書：${noTr.join('、')}`);
+}
+function invFixSelected() {
+  const sel = _invSelected();
+  if (!sel.length) { showToast('⚠️ 請求書が選ばれていません', true); return; }
+  const notCsv = sel.filter(v => v.status !== 'csv');
+  if (notCsv.length) { alert(`CSVをまだ出していない請求書は確定できません：\n${notCsv.map(v => v.id).join('\n')}`); return; }
+  if (!confirm(`次の${sel.length}件を確定します（楽楽明細で発行した請求書）。中身は変えられなくなり、請求済になります。\n\n${sel.map(v => `・${v.id} ${v.torihiki} ${formatMoney(_invTotal(v).total)}`).join('\n')}`)) return;
+  const now = new Date().toISOString();
+  const all = [];
+  sel.forEach(inv => { inv.status = 'fixed'; inv.fixedAt = now; all.push(...inv.items); });
+  saveBillingExt();
+  // これまでの「請求済」の印も付ける（物件一覧・PDF・請求アラートが今までどおり請求済として扱えるように）
+  _baApplyDone({ kind: 'seikyu' }, all.map(it => ({ sKey: it.sKey, dekiYm: it.dekiYm || null, chouseiId: it.chouseiId != null ? it.chouseiId : null })));
+  openInvoiceList();
+}
+function invUnfix(id) {
+  const inv = _invAll().find(v => v.id === id); if (!inv || inv.status !== 'fixed') return;
+  if (!confirm(`⚠️ ${inv.id}（${inv.torihiki}）の確定を取り消します。\n楽楽明細で発行済みの請求書なら、取り消さずに売上調整で直してください。\n押し間違いで確定した場合だけ使ってください。取り消しますか？`)) return;
+  inv.status = 'csv'; inv.fixedAt = '';
+  let chS = false, chB = false, chC = false;
+  inv.items.forEach(it => {
+    if (it.chouseiId != null) { const c = chouseiData.find(x => x.id === it.chouseiId); if (c && c.seikyu) { c.seikyu = null; chC = true; } }
+    else if (it.dekiYm) { const st = (billingExtData.dekidaka[it.sKey] || {})[it.dekiYm]; if (st && st.seikyu) { delete st.seikyu; chB = true; } }
+    else if (seikyuData[it.sKey]) { delete seikyuData[it.sKey]; chS = true; }
+  });
+  saveBillingExt();
+  if (chS) saveSeikyu();
+  if (chC) saveChousei();
+  openInvoiceList(); try { renderBillingAlert(); } catch (e) {}
+}
+// 請求アラートの上に出す「請求書」の欄
+function _invAlertBlock() {
+  let c;
+  try { c = _invCandidates(false); } catch (e) { console.warn('[請求書] 計算エラー', e); return ''; }
+  const inv = _invAll();
+  const draft = inv.filter(v => v.status === 'draft').length, csv = inv.filter(v => v.status === 'csv').length;
+  const warn = c.list.length ? `<span style="color:#e53935;font-weight:900;">締め日が来て、まだ請求書を作っていない取引先：${c.list.length}社</span>` : '<span style="color:var(--text-muted);">締め日が来て、請求書を作っていない取引先はありません</span>';
+  return `<div class="card" style="margin-top:8px;padding:10px 14px;border-left:4px solid #1976d2;">
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+      <span style="font-size:14px;font-weight:900;color:var(--accent2);">🧾 請求書（楽楽明細）</span>
+      <button class="btn btn-primary btn-sm" onclick="openInvoiceCreate(false)">＋ 請求書を作る</button>
+      <button class="btn btn-secondary btn-sm" onclick="openInvoiceList('open')">📋 請求書の一覧</button>
+    </div>
+    <div style="font-size:12px;margin-top:6px;">${warn}
+      ${draft ? `　<span style="color:#f57c00;font-weight:700;">下書きのまま：${draft}件</span>` : ''}
+      ${csv ? `　<span style="color:#1976d2;font-weight:700;">CSVを出して未確定：${csv}件</span>` : ''}</div>
+  </div>`;
+}
+// 請求アラートの行に、入っている請求書を表示する
+function _invTagFor(j) {
+  const key = j.chouseiId != null ? `C|${j.chouseiId}` : j.dekiYm ? `D|${j.sKey}|${j.dekiYm}` : `J|${j.sKey}`;
+  const inv = _invUsedKeys().get(key);
+  if (!inv) return '';
+  const st = INV_ST[inv.status] || INV_ST.draft;
+  return ` <span style="font-size:10px;color:${st.color};border:1px solid ${st.color};border-radius:4px;padding:0 5px;">🧾${inv.id}（${st.label}）</span>`;
+}
+
 // ===== 請求アラートのカードから楽楽明細CSV（2026-11-07-05） =====
+// ※2026-11-09：カードのボタンは外し、請求書画面（上の「請求書の作成・記録」）から使う部品として残す
 // カード（取引先・会社・締め日）の未請求分を、そのまま1枚の請求書にする。選び忘れ・不要な予定の混入を防ぐため
 //   ・物件：同じ取引先・同じ物件名の「受注」の見積りがあればその明細（新しいもの）。無ければ「建方工事一式 ¥売上金額」の1行
 //   ・出来高：「物件名（○月出来高）¥その月の金額」の1行
@@ -15620,11 +15950,11 @@ function _baRakuSum() {
   const el = document.getElementById('baRakuSum');
   if (el) el.innerHTML = `${ps.length}件　税抜 <b>${formatMoney(sub)}</b>　消費税 ${formatMoney(tax)}　合計 <b>${formatMoney(sub + tax)}</b>`;
 }
-function _baRakuRows(card, parts, seikyuDate) {
+function _baRakuRows(card, parts, seikyuDate, noOverride) {
   const rows = [['帳票No','顧客コード','金額（税抜）','消費税','合計','支払期日','明細日付','商品名','単価','数量','金額','備考','会社','取引先','物件名','単位','明細備考','施工期間','請求日']];
   const fmt = ds => ds ? ds.replace(/-/g, '/') : '';
   const tr = card.tr;
-  const no = _mtGroupNo(`${tr.id}|${card.deadline}|${card.kaisha || ''}`);
+  const no = noOverride || _mtGroupNo(`${tr.id}|${card.deadline}|${card.kaisha || ''}`);
   const customerCode = _mtShortenIdFor10Digits(tr.id);
   const ps = [...parts].sort((a, b) => (a.kanko || '').localeCompare(b.kanko || ''));
   const subtotal = ps.reduce((s, p) => s + p.subtotal, 0);
@@ -15773,9 +16103,10 @@ function renderBillingAlert() {
     const BULK_LABEL = { uriage: 'この区切りの売上依頼をまとめて済にする', seikyu: 'この締め期間をまとめて請求済にする', zseikyu: '請求済（経理へ依頼済）にする', nyukin: '入金確認済にする' };
     // 未処理が2件以上、または1件でも行のボタンが［状態］（画面を開く）しかない場合に表示
     // 【2026-11-07-05】請求のカードには「📄 楽楽明細CSV」（このカードの未請求分で請求書を1枚作る）
+    // 【2026-11-09】請求のカードは、請求書画面（🧾 請求書を作る）から請求する。カードからのCSV・まとめて請求済は外した
     const rakuBtn = (b.kind === 'seikyu' && pendingJobs.length)
-      ? `<button class="btn btn-secondary btn-sm" style="font-size:12px;padding:5px 12px;" onclick="baRakurakuCsv(${cardIdx})">📄 楽楽明細CSV（${pendingJobs.length}件）</button>` : '';
-    const bulkBtn = (pendingJobs.length >= 2 || (pendingJobs.length === 1 && b.kind !== 'nyukin' && !pendingJobs[0].dekiYm))
+      ? `<button class="btn btn-secondary btn-sm" style="font-size:12px;padding:5px 12px;" onclick="openInvoiceCreate(false)">🧾 請求書を作る</button>` : '';
+    const bulkBtn = (b.kind !== 'seikyu') && (pendingJobs.length >= 2 || (pendingJobs.length === 1 && b.kind !== 'nyukin' && !pendingJobs[0].dekiYm))
       ? `<div style="display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap;margin-top:8px;">
           ${rakuBtn}
           <button class="btn btn-primary btn-sm" style="font-size:12px;padding:5px 12px;" onclick="baBulkDone(${cardIdx})">✓ ${BULK_LABEL[b.kind]}（${pendingJobs.length}件 ${formatMoney(pendingJobs.reduce((s, j) => s + j.amount, 0))}）</button>
@@ -15795,7 +16126,7 @@ function renderBillingAlert() {
         : j.chouseiId != null ? `計上 ${parseInt(j.done.slice(5, 7))}月${j.carriedFrom ? `<span style="color:#7b1fa2;font-weight:700;">（${_baMd(j.carriedFrom)}期限から繰越）</span>` : ''}`
         : `${future ? '完工予定' : '完工'} ${_baMd(j.done)}${j.carriedFrom ? `<span style="color:#7b1fa2;font-weight:700;">（${_baMd(j.carriedFrom)}期限から繰越）</span>` : ''}`;
       return `<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-top:1px dashed var(--border);font-size:12px;${doneIt ? 'opacity:0.55;' : ''}">
-        <span style="flex:1;min-width:0;font-weight:700;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(j.bukken)}${j.dekiYm ? ' <span style="font-size:10px;color:#ab47bc;border:1px solid #ab47bc;border-radius:4px;padding:0 5px;">📊出来高</span>' : ''}</span>
+        <span style="flex:1;min-width:0;font-weight:700;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(j.bukken)}${j.dekiYm ? ' <span style="font-size:10px;color:#ab47bc;border:1px solid #ab47bc;border-radius:4px;padding:0 5px;">📊出来高</span>' : ''}${b.kind === 'seikyu' && !isDoneFor(b.kind, j) ? _invTagFor(j) : ''}</span>
         ${tantoSpan(j)}
         <span style="color:${future && !isZen ? '#f57c00' : 'var(--text-muted)'};white-space:nowrap;">${dateText}</span>
         <span style="font-family:'DM Mono',monospace;white-space:nowrap;min-width:90px;text-align:right;">${formatMoney(j.amount)}</span>
@@ -15853,9 +16184,11 @@ function renderBillingAlert() {
       ${_baTantoFilter ? `<span style="color:var(--accent);font-weight:700;">※${_baTantoFilter === '__none__' ? '窓口未設定' : esc(_baTantoFilter)}の物件だけを表示中（カードの件数・金額もその物件分のみ）</span>` : ''}
     </div>
     <div style="margin-top:8px;padding:8px 12px;border:1px solid var(--border);border-radius:8px;background:var(--surface2);font-size:12px;line-height:1.7;color:var(--text);">
-      <b>使い方</b>　① ⚠️漏れ・🔔今日やることのカードを上から確認 → ② カード単位（取引先・会社・期間ごと）で経理へ売上依頼／請求依頼 → ③ 依頼したらカード下の［まとめて済にする］ボタン（1件ずつなら各物件の［状態］）で「売上依頼済」「請求済」にする → 全物件が済になるとカードは消えます。取り消しは各物件の［状態］から。<br>
+      <b>使い方</b>　<b>請求</b>：締め日が来たら下の「🧾 請求書を作る」→ 中身を確認 → 楽楽明細CSVを出力 → 楽楽明細で取り込み・発行 → 一覧で［確定］（請求済になり、カードから消えます）。<br>
+      <b>売上依頼</b>：カード単位（取引先・会社・期間ごと）で経理へ売上依頼 → カード下の［まとめて済にする］（1件ずつなら各物件の［状態］）。取り消しは各物件の［状態］から。<br>
       <span style="color:var(--text-muted);">💰前金：施工開始の10日前から「経理へ請求依頼」「入金確認」を表示（入金確認はカードの［入金確認済にする］で記録）。📊出来高：物件の［状態］で「出来高の物件として管理する」にすると、毎月その月の出来高分を売上依頼・請求のカードに表示します。請求書・売上は会社（TWW／ARK）ごとに分けて表示しています。</span>
     </div>
+    ${_invAlertBlock()}
     ${section('⚠️ 漏れ（期限を過ぎて未処理）', '#e53935', r.overdue, '#e53935', '期限を過ぎた未処理はありません')}
     ${section('🔔 今日やること', '#f57c00', r.todo, '#f57c00', '今日やることはありません')}
     ${section('⏳ 近日（7日以内に期限・完工待ちの工事あり）', 'var(--accent2)', r.soon, 'var(--border)', '7日以内に期限が来るものはありません')}
@@ -21351,7 +21684,6 @@ function _renderMtCards(el, list) {
           <span style="font-size:16px;font-weight:900;color:var(--accent);">¥${(m.subtotal||0).toLocaleString()}</span>
           <button class="btn btn-secondary btn-sm" onclick="openMitsumoriEdit(${m.id})">✏️ 編集</button>
           <button class="btn btn-secondary btn-sm" onclick="previewMitsumoriPdf(${m.id})">📄 帳票</button>
-          <button class="btn btn-secondary btn-sm" onclick="exportMitsumoriCsv(${m.id})">📊 CSV</button>
           <button class="btn btn-sm" style="background:rgba(198,40,40,0.2);color:#ef5350;border:1px solid #ef5350;" onclick="deleteMitsumori(${m.id})">削除</button>
         </div>
       </div>`;
@@ -21407,7 +21739,6 @@ function _renderMtTable(el, list) {
         <button class="btn btn-secondary btn-sm" onclick="previewMitsumoriPdf(${m.id},'chumonsho')" style="font-size:11px;padding:3px 8px;">📑注</button>
         <button class="btn btn-secondary btn-sm" onclick="previewMitsumoriPdf(${m.id},'ukeisho')" style="font-size:11px;padding:3px 8px;">📑請</button>
         <button class="btn btn-secondary btn-sm" onclick="previewMitsumoriPdf(${m.id},'seikyusho')" style="font-size:11px;padding:3px 8px;">💴</button>
-        <button class="btn btn-secondary btn-sm" onclick="exportMitsumoriCsv(${m.id})" style="font-size:11px;padding:3px 8px;">📊CSV</button>
         <button class="btn btn-sm" style="font-size:11px;padding:3px 8px;background:rgba(198,40,40,0.2);color:#ef5350;border:1px solid #ef5350;" onclick="deleteMitsumori(${m.id})">削除</button>
       </td>
     </tr>`;
@@ -23866,7 +24197,9 @@ function exportTorihikiRakurakuCsv() {
   const rows = [['顧客コード','顧客名','部署名','担当者名','敬称','郵便番号','住所1','住所2','メールアドレス','サブメールアドレス1','サブメールアドレス2','サブメールアドレス3']];
   torihikiData.forEach(t => {
     const k = t.seikyusaki || {};
-    rows.push([_mtShortenIdFor10Digits(t.id), k.name || t.name || '', k.busho || '', k.tanto || '', k.keisho || '御中',
+    // 【2026-11-07-09】担当者名は「様」付きで出す（楽楽明細のレイアウトで担当者がいない取引先に「様」だけ出ないように）
+    const tantoSama = k.tanto ? `${String(k.tanto).replace(/\s*(様|殿)\s*$/, '')} 様` : '';
+    rows.push([_mtShortenIdFor10Digits(t.id), k.name || t.name || '', k.busho || '', tantoSama, k.keisho || '御中',
       k.zip || '', k.same ? (t.address || '') : (k.addr1 || ''), k.same ? '' : (k.addr2 || ''),
       k.mail || '', k.sub1 || '', k.sub2 || '', k.sub3 || '']);
   });
