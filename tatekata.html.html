@@ -12,7 +12,7 @@
 // ★重要：更新をデプロイして反映を確認したら、必ずこの値を変更してください（日付や連番など何でもOK）。
 // 開いている全員の画面が、この値の変化を数分おきに自動検知して、勝手に再読み込みしてくれます。
 // （「リロードしてください」と一人ずつ声をかけなくても、自動で最新版に切り替わる仕組みです）
-const BUILD_VERSION = '2026-11-20-01';
+const BUILD_VERSION = '2026-11-20-02';
 
 firebase.initializeApp({
   apiKey: "AIzaSyD_yVJymE0OR8LjEAYwt0-5XBuNOQ4K3-s",
@@ -16007,7 +16007,7 @@ function openInvoiceIko(month) {
       <span style="flex:1;min-width:0;">${_invEsc(it.bukken)}${it.dekiYm ? `（${parseInt(it.dekiYm.slice(5))}月出来高）` : ''}
         <span style="color:var(--text-muted);">${it.kind === 'chousei' ? '計上 ' + parseInt(it.done.slice(5, 7)) + '月' : '完工 ' + _baMd(it.done)}</span>
         ${it.seikyuDone ? '' : '<span style="color:#f57c00;" title="今までの方法で請求済の印が付いていません。実際に請求したか確認してください">⚠️請求済の印なし</span>'}</span>
-      <select class="iko-shime" data-i="${i}" style="padding:2px 4px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:11px;">${opts}</select>
+      <select class="iko-shime" data-i="${i}" style="width:auto;max-width:140px;flex-shrink:0;padding:2px 4px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:11px;">${opts}</select>
       <span style="font-family:'DM Mono',monospace;white-space:nowrap;min-width:80px;text-align:right;">${formatMoney(it.amount)}</span>
     </div>`;
   });
