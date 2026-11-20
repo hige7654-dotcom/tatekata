@@ -12,7 +12,7 @@
 // ★重要：更新をデプロイして反映を確認したら、必ずこの値を変更してください（日付や連番など何でもOK）。
 // 開いている全員の画面が、この値の変化を数分おきに自動検知して、勝手に再読み込みしてくれます。
 // （「リロードしてください」と一人ずつ声をかけなくても、自動で最新版に切り替わる仕組みです）
-const BUILD_VERSION = '2026-11-20-03';
+const BUILD_VERSION = '2026-11-20-04';
 
 firebase.initializeApp({
   apiKey: "AIzaSyD_yVJymE0OR8LjEAYwt0-5XBuNOQ4K3-s",
@@ -10737,7 +10737,27 @@ function exportMonthToExcel() {
   // 既に出力済みの物件キーを追跡（重複行に売上・担当者を出さないため）
   const outputtedKeys = new Set();
 
-  const headers = ['日付','曜日','取引先','物件名','工程','住所','坪数','人数','契約金額（円）','当月売上金（円）','追加売上（円）','追加売上日','リーダー','窓口','見積担当','備考'];
+  // 【2026-11-20-04】楽楽債権管理の取り込み用に「取引先コード」「請求区分」を各行の最後に追加（既存の列・合計行は変えない）
+  //   取引先コード：楽楽明細の顧客コードと同じ（exportTorihikiRakurakuCsv と同じ _mtShortenIdFor10Digits(取引先id)）。取引先マスタに無い名前は空欄
+  //   請求区分：物件一覧PDF（execBukkenPdf）の「請求」欄と同じ判定・表記（請求済／翌月請求／未請求）
+  const _csvTrCode = name => { const t = _baTorihikiRec(name); return t ? String(_mtShortenIdFor10Digits(t.id)) : ''; };
+  const _csvSeikyuLabel = st => st === 'done' ? '請求済' : st === '翌月' ? '翌月請求' : '未請求';
+  const _csvAllBD = getBD();
+  const _csvFirstDate = new Map(); // 当月の物件ごとの最初の日付（0円も含む。物件一覧PDFの照合キーと同じ基準）
+  sorted.forEach(b => { const g = b.torihiki + '|' + b.bukken; if (!_csvFirstDate.has(g)) _csvFirstDate.set(g, b.date); });
+  const _csvKubunCache = new Map();
+  const _csvSeikyuKubun = b => {
+    const g = b.torihiki + '|' + b.bukken;
+    if (_csvKubunCache.has(g)) return _csvKubunCache.get(g);
+    const recs = _csvAllBD.filter(x => x.torihiki === b.torihiki && x.bukken === b.bukken);
+    const isOther = recs.length > 0 && recs.every(x => x.kotei === 'other');
+    const key = isOther ? `${b.torihiki}|||${b.bukken}|||${_csvFirstDate.get(g) || b.date}` : `${b.torihiki}|||${b.bukken}`;
+    const v = _csvSeikyuLabel(_pdfStateFor(key, b.torihiki, b.bukken, ym).seikyuState);
+    _csvKubunCache.set(g, v);
+    return v;
+  };
+
+  const headers = ['日付','曜日','取引先','物件名','工程','住所','坪数','人数','契約金額（円）','当月売上金（円）','追加売上（円）','追加売上日','リーダー','窓口','見積担当','備考','取引先コード','請求区分'];
   let csv = '\uFEFF';
   csv += `"${uriageMonthYear}年${uriageMonthMonth}月　建て方スケジュール"\n\n`;
   csv += headers.map(escape).join(',') + '\n';
@@ -10774,22 +10794,27 @@ function exportMonthToExcel() {
       leader,
       madoguchi,
       mitsumoriTanto,
-      b.biko || ''
+      b.biko || '',
+      _csvTrCode(b.torihiki),
+      _csvSeikyuKubun(b)
     ].map(escape).join(',') + '\n';
   });
 
   // 売上調整（当月計上分）をCSVに追加
   const chouseiThisMonth = chouseiData.filter(c => c.keijoMonth === ym && _chouseiKaishaOk(c));
   if (chouseiThisMonth.length > 0) {
-    csv += '\n"【売上調整】","取引先","調整金額（円）","計上月","対象月","メモ"\n';
+    csv += '\n"【売上調整】","取引先","調整金額（円）","計上月","対象月","メモ","取引先コード","請求区分"\n';
     chouseiThisMonth.forEach(c => {
+      const scState = c.seikyu ? (c.seikyu.state || 'done') : null; // 物件一覧PDFの売上調整の「請求」欄と同じ判定
       csv += [
         '売上調整',
         c.torihiki || '',
         c.amount || 0,
         c.keijoMonth || '',
         c.taishoMonth || '',
-        c.memo || ''
+        c.memo || '',
+        _csvTrCode(c.torihiki),
+        _csvSeikyuLabel(scState)
       ].map(escape).join(',') + '\n';
     });
   }
