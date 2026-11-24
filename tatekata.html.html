@@ -12,7 +12,7 @@
 // ★重要：更新をデプロイして反映を確認したら、必ずこの値を変更してください（日付や連番など何でもOK）。
 // 開いている全員の画面が、この値の変化を数分おきに自動検知して、勝手に再読み込みしてくれます。
 // （「リロードしてください」と一人ずつ声をかけなくても、自動で最新版に切り替わる仕組みです）
-const BUILD_VERSION = '2026-11-20-04';
+const BUILD_VERSION = '2026-11-25-01';
 
 firebase.initializeApp({
   apiKey: "AIzaSyD_yVJymE0OR8LjEAYwt0-5XBuNOQ4K3-s",
@@ -24171,6 +24171,7 @@ function deleteMitsumori(id) {
 // --- PDF プレビュー（見積書／注文書／注文請書） ---
 const MT_DOC_TYPES = {
   mitsumori: { label: '📄 見積書', title: '見積書', build: buildMitsumoriPdfHtml },
+  gaisan:    { label: '📄 概算見積書', title: '概算御見積書', build: m => buildMitsumoriPdfHtml(m, { gaisan: true }) }, // 2026-11-25-01：中身は見積書と同じ、タイトルと注意書きだけ変える
   chumonsho: { label: '📑 注文書', title: '注文書', build: buildChumonshoPdfHtml },
   ukeisho:   { label: '📑 注文請書', title: '注文請書', build: buildUkeoshoPdfHtml },
   seikyusho: { label: '💴 請求書', title: '請求書', build: buildSeikyushoPdfHtml },
@@ -24630,7 +24631,7 @@ function printMitsumoriPdf() {
 }
 
 // 帳票PDFのファイル名用タイトル：「取引先名（会社の種類を除く） 物件名 帳票名」
-const MT_PDF_FILE_LABEL = { mitsumori: '御見積書', chumonsho: '注文書', ukeisho: '注文請書', seikyusho: '請求書' };
+const MT_PDF_FILE_LABEL = { mitsumori: '御見積書', gaisan: '概算御見積書', chumonsho: '注文書', ukeisho: '注文請書', seikyusho: '請求書' };
 function _mtPdfFileTitle(m, docType) {
   if (!m) return '';
   const torihiki = String(m.torihiki || '')
@@ -24980,7 +24981,8 @@ function _mtIssuerSealHtml(kaisha, companyName, tantoLine, showSeal) {
 }
 
 
-function buildMitsumoriPdfHtml(m) {
+function buildMitsumoriPdfHtml(m, opts) {
+  const gaisan = !!(opts && opts.gaisan); // 概算見積書（2026-11-25-01）
   const dateStr = _mtDateStr(m);
   const { lines, subtotal, tax, total } = buildMtPdfLines(m);
   const kaisha = _mtKaishaOf(m);
@@ -24991,7 +24993,7 @@ function buildMitsumoriPdfHtml(m) {
   return `
     <div style="width:100%;font-size:13px;">
       <div style="text-align:right;font-size:12px;color:#555;margin-bottom:6px;">${dateStr}</div>
-      ${_mtTitleHtml(kaisha, '≪ 御 見 積 書 ≫')}
+      ${_mtTitleHtml(kaisha, gaisan ? '≪ 概 算 御 見 積 書 ≫' : '≪ 御 見 積 書 ≫')}
 
       <table style="width:100%;border-collapse:collapse;margin-bottom:14px;border:none;">
         <tr>
@@ -25008,6 +25010,7 @@ function buildMitsumoriPdfHtml(m) {
 
       ${_mtLinesTableHtml(lines, kaisha)}
       ${_mtTotalsTableHtml(subtotal, tax, total)}
+      ${gaisan ? '<div style="text-align:right;font-size:12px;font-weight:bold;margin:-8px 0 14px;">※本見積りは概算です。図面確定後、正式なお見積書を提出いたします。</div>' : ''}
 
       <div style="border:1px solid #bbb;padding:12px 14px;font-size:12px;color:#444;line-height:1.8;">
         <strong style="font-size:13px;">注意事項・特記事項</strong>
