@@ -12,7 +12,7 @@
 // ★重要：更新をデプロイして反映を確認したら、必ずこの値を変更してください（日付や連番など何でもOK）。
 // 開いている全員の画面が、この値の変化を数分おきに自動検知して、勝手に再読み込みしてくれます。
 // （「リロードしてください」と一人ずつ声をかけなくても、自動で最新版に切り替わる仕組みです）
-const BUILD_VERSION = '2026-11-26-01';
+const BUILD_VERSION = '2026-11-26-02';
 
 firebase.initializeApp({
   apiKey: "AIzaSyD_yVJymE0OR8LjEAYwt0-5XBuNOQ4K3-s",
@@ -9572,17 +9572,28 @@ function execBukkenPdf() {
         : `<td style="color:#e65100;font-weight:700;text-align:center;">未売上</td>`;
       // 請求・売上のどちらかが済んでいなければ黄色（物件の行と同じルール）
       const rowBg = (scState !== 'done' || uiState !== 'done') ? '#fff59d' : '#fff8e1';
+      // 【2026-11-26-02】メモが物件名の狭い欄で細かく折り返して読みにくかったため、取引先＋物件名の2列をつなげて広く使う。
+      //   上に取引先（小さく）、下にメモ（太字）。対象月は左端の「売上調整」の下に出す
+      const _tm = (c.taishoMonth || '').match(/^(\d{4})-(\d{2})$/);
+      const taishoLabel = _tm ? `${_tm[1]}年${parseInt(_tm[2])}月` : (c.taishoMonth || '－');
       chouseiRows.push(`<tr style="background:${rowBg};border-bottom:1px solid #e0e0e0;">
-        <td style="padding:7px 8px;text-align:center;font-size:12px;color:#555;">売上調整</td>
+        <td style="padding:7px 8px;text-align:center;font-size:12px;color:#555;">売上調整<br><span style="font-size:10px;color:#888;white-space:nowrap;">対象 ${taishoLabel}</span></td>
         ${_pdfKaishaCell([c.kaisha || 'TWW'])}
-        <td style="padding:7px 8px;font-size:12px;color:#555;">${c.torihiki || '－'}</td>
-        <td style="padding:7px 8px;font-size:13px;font-weight:700;color:#f57c00;">${c.memo || '売上調整'}<br><span style="font-size:10px;font-weight:400;color:#888;">対象月：${c.taishoMonth||'－'}</span></td>
+        <td colspan="2" style="padding:7px 8px;">
+          <div style="font-size:11px;color:#555;">${c.torihiki || '－'}</div>
+          <div style="font-size:13px;font-weight:700;color:#e65100;line-height:1.45;margin-top:1px;">${c.memo || '売上調整'}</div>
+        </td>
         <td style="padding:7px 8px;text-align:right;font-family:monospace;font-size:12px;font-weight:700;color:#f57c00;">¥${amt.toLocaleString('ja-JP')}</td>
         ${scCell}${uCellC}
       </tr>`);
     });
   }
   const grandTotal = totalAmount + chouseiTotal;
+  // 売上調整の前に区切りの見出し行（2026-11-26-02）
+  if (chouseiRows.length) {
+    const [_cy, _cm] = filterM.split('-');
+    chouseiRows.unshift(`<tr><td colspan="7" style="padding:10px 8px 5px;font-size:12px;font-weight:900;color:#e65100;border-bottom:2px solid #f57c00;">📝 売上調整（${_cy}年${parseInt(_cm)}月計上）　${chouseiRows.length}件　計 ¥${chouseiTotal.toLocaleString('ja-JP')}</td></tr>`);
+  }
 
   const rows = targets.map((g, i) => {
     const [y,m,d] = g.date.split('-');
@@ -9636,7 +9647,8 @@ function execBukkenPdf() {
     body { font-family: 'Noto Sans JP', sans-serif; color: #111; font-size: 13px; background:#fff; }
     h2 { font-size: 18px; font-weight: 900; margin: 0 0 4px; color: #1a1a2e; }
     .meta { font-size: 12px; color: #555; margin-bottom: 14px; display:flex; justify-content:space-between; align-items:flex-end; }
-    table { width: 100%; border-collapse: collapse; }
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; } /* 2026-11-26-02：列幅を固定（物件名・売上調整のメモが狭くならないように） */
+    td { overflow-wrap: anywhere; }
     thead tr { background: #1a1d27; color: #fff; }
     thead th { padding: 8px 8px; font-size: 12px; font-weight: 700; text-align: center; }
     thead th:nth-child(3) { text-align: left; }
@@ -9652,13 +9664,14 @@ function execBukkenPdf() {
   </div>
   <table>
     <thead><tr>
-      <th style="width:80px;">完工日</th>
-      <th style="width:44px;">会社</th>
-      <th style="width:130px;">取引先</th>
+      <!-- 幅は左右の余白（8px×2）を除いた値。実際の列幅：完工日86・会社44・取引先132・金額96・請求64・売上64、残りが物件名 -->
+      <th style="width:70px;">完工日</th>
+      <th style="width:28px;">会社</th>
+      <th style="width:116px;">取引先</th>
       <th>物件名</th>
-      <th style="width:110px;text-align:right;">金額</th>
-      <th style="width:68px;">請求</th>
-      <th style="width:68px;">売上</th>
+      <th style="width:80px;text-align:right;">金額</th>
+      <th style="width:48px;">請求</th>
+      <th style="width:48px;">売上</th>
     </tr></thead>
     <tbody>${rows}${chouseiRows.join('')}</tbody>
     <tfoot><tr>
