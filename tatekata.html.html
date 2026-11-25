@@ -12,7 +12,7 @@
 // ★重要：更新をデプロイして反映を確認したら、必ずこの値を変更してください（日付や連番など何でもOK）。
 // 開いている全員の画面が、この値の変化を数分おきに自動検知して、勝手に再読み込みしてくれます。
 // （「リロードしてください」と一人ずつ声をかけなくても、自動で最新版に切り替わる仕組みです）
-const BUILD_VERSION = '2026-11-25-02';
+const BUILD_VERSION = '2026-11-26-01';
 
 firebase.initializeApp({
   apiKey: "AIzaSyD_yVJymE0OR8LjEAYwt0-5XBuNOQ4K3-s",
@@ -3225,6 +3225,7 @@ firebase.initializeApp({
   <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;align-items:center;">
     <button class="btn btn-primary" onclick="openMitsumoriNew('uke')" style="font-size:13px;">＋ 請け見積り作成</button>
     <button class="btn btn-secondary" onclick="openMitsumoriNew('jinko')" style="font-size:13px;">＋ 人工見積り作成</button>
+    <button class="btn btn-secondary" onclick="openShanaiMtNew()" style="font-size:13px;">＋ 社内見積り作成</button>
     <button class="btn btn-secondary" onclick="openCompanyInfoModal()" style="font-size:13px;">🏦 帳票の会社情報・振込先</button>
     <!-- 2026-11-09：楽楽明細CSVは請求アラートの「🧾 請求書」から出すため、一括CSV出力のボタンは外した -->
     <div style="margin-left:auto;display:flex;gap:4px;">
@@ -3256,6 +3257,7 @@ firebase.initializeApp({
       <option value="">全種別</option>
       <option value="uke">請け</option>
       <option value="jinko">人工</option>
+      <option value="shanai">社内</option>
     </select>
     <select id="mtFilter_status" onchange="renderMitsumoriList()" style="font-size:12px;padding:5px 8px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);">
       <option value="">全ステータス</option>
@@ -22149,12 +22151,13 @@ function renderMitsumoriList() {
   // --- サマリーバー ---
   const summaryEl = document.getElementById('mtSummaryBar');
   if (summaryEl) {
-    const total   = list.reduce((s,m)=>s+(m.subtotal||0),0);
-    const wonList = list.filter(m=>m.status==='won');
+    const sList   = list.filter(m => m.type !== 'shanai'); // 社内見積り（工場支援など）は件数・金額・受注率に数えない（2026-11-26-01）
+    const total   = sList.reduce((s,m)=>s+(m.subtotal||0),0);
+    const wonList = sList.filter(m=>m.status==='won');
     const wonTotal = wonList.reduce((s,m)=>s+(m.subtotal||0),0);
-    const wonRate = list.length ? Math.round(wonList.length/list.length*100) : 0;
+    const wonRate = sList.length ? Math.round(wonList.length/sList.length*100) : 0;
     summaryEl.innerHTML = [
-      `<div><span style="color:var(--text-muted);">件数</span> <strong>${list.length}件</strong></div>`,
+      `<div><span style="color:var(--text-muted);">件数</span> <strong>${sList.length}件</strong></div>`,
       `<div><span style="color:var(--text-muted);">合計金額</span> <strong style="color:var(--accent);">¥${total.toLocaleString()}</strong></div>`,
       `<div><span style="color:var(--text-muted);">受注</span> <strong style="color:#81c784;">${wonList.length}件 ¥${wonTotal.toLocaleString()}</strong></div>`,
       `<div><span style="color:var(--text-muted);">受注率</span> <strong style="color:#81c784;">${wonRate}%</strong></div>`,
@@ -22198,6 +22201,8 @@ function _renderMtCards(el, list) {
     const rowsHtml = items.map(m => {
       const typeLabel = m.type==='uke'
         ? '<span style="background:rgba(21,101,192,0.2);color:#64b5f6;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:700;">請け</span>'
+        : m.type==='shanai'
+        ? '<span style="background:rgba(255,193,7,0.2);color:#ffd54f;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:700;">社内</span>'
         : '<span style="background:rgba(198,40,40,0.2);color:#ef9a9a;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:700;">人工</span>';
       const kaishaLabel = (m.kaisha||'TWW')==='ARK'
         ? '<span style="background:rgba(102,187,106,0.2);color:#66bb6a;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:700;">🟢 ARK</span>'
@@ -22251,6 +22256,8 @@ function _renderMtTable(el, list) {
   const rows = list.map(m => {
     const typeLabel = m.type==='uke'
       ? '<span style="background:rgba(21,101,192,0.2);color:#64b5f6;padding:1px 5px;border-radius:3px;font-size:10px;font-weight:700;">請け</span>'
+      : m.type==='shanai'
+      ? '<span style="background:rgba(255,193,7,0.2);color:#ffd54f;padding:1px 5px;border-radius:3px;font-size:10px;font-weight:700;">社内</span>'
       : '<span style="background:rgba(198,40,40,0.2);color:#ef9a9a;padding:1px 5px;border-radius:3px;font-size:10px;font-weight:700;">人工</span>';
     const kaishaLabel = (m.kaisha||'TWW')==='ARK'
       ? '<span style="background:rgba(102,187,106,0.2);color:#66bb6a;padding:1px 5px;border-radius:3px;font-size:10px;font-weight:700;">🟢 ARK</span>'
@@ -22318,6 +22325,280 @@ function toggleMtGroup(torihiki) {
   renderMitsumoriList();
 }
 
+// ===== 社内見積り（2026-11-26-01） =====
+// 工場支援など、カレンダーに1日ずつ登録している仕事の見積書を作る（type:'shanai'）。
+// ・［📅 カレンダーから取り込む］：取引先・会社・対象月の「その他」工程の記録を集め、物件名ごとにチェックで選んで1日1行の明細にする
+//   内容＝カレンダーの物件名（工場支援・工場研修など）、数量＝カレンダーに登録した人数、単価＝その日の金額÷人数、備考＝その日のコメント
+// ・取り込んだあとも明細は全部手で直せる。宛先（担当者名）・備考・特記事項は手入力
+// ・保存＝受注。見積り一覧の件数・合計金額・受注率には数えない
+// ・データ：m.shanaiYm（'YYYY-MM'）、m.shanaiLines＝[{ date, desc, qty, unit, tanka, biko }]。見積書は buildMtPdfLines の社内見積りの分岐で作る
+const _snEsc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+window._snState = null; // { id, lines, calNames }
+function _snLineAmount(l) { return Math.round((parseFloat(l.qty) || 0) * (parseFloat(l.tanka) || 0)); }
+function _snMonthEnd(ym) {
+  const [y, m] = String(ym || '').split('-').map(Number);
+  if (!y || !m) return '';
+  return `${ym}-${String(new Date(y, m, 0).getDate()).padStart(2, '0')}`;
+}
+function _snEnsureModal() {
+  let ov = document.getElementById('shanaiMtModal');
+  if (ov) return ov;
+  ov = document.createElement('div');
+  ov.id = 'shanaiMtModal';
+  ov.className = 'modal-overlay';
+  ov.style.cssText = 'display:none;align-items:flex-start;overflow-y:auto;';
+  ov.innerHTML = `
+  <div class="modal" style="max-width:760px;width:calc(100vw - 16px);margin:8px auto;max-height:none;overflow:visible;">
+    <div class="modal-title">
+      <span id="snModalTitle">📝 社内見積り作成</span>
+      <button class="modal-close" onclick="closeShanaiMt()">✕</button>
+    </div>
+    <div id="snModalBody" style="padding:4px 0;"></div>
+  </div>`;
+  document.body.appendChild(ov);
+  return ov;
+}
+function openShanaiMtNew() {
+  const defaultKaisha = (currentKaisha === 'TWW' || currentKaisha === 'ARK') ? currentKaisha : 'TWW';
+  const now = new Date();
+  const ym = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  _snOpen({ id: null, type: 'shanai', kaisha: defaultKaisha, torihiki: '', bukken: '', aiteTanto: '', date: _snMonthEnd(ym), memo: '', shanaiYm: ym, shanaiLines: [] });
+}
+function openShanaiMtEdit(id) {
+  const m = mitsumoriData.find(x => x.id === id);
+  if (!m) return;
+  _snOpen(JSON.parse(JSON.stringify(m)));
+}
+function closeShanaiMt() {
+  const ov = document.getElementById('shanaiMtModal');
+  if (ov) ov.style.display = 'none';
+  window._snState = null;
+}
+function _snOpen(m) {
+  const ov = _snEnsureModal();
+  window._snState = { id: m.id, status: m.status, lines: (m.shanaiLines || []).map(l => ({ ...l })), calNames: null };
+  document.getElementById('snModalTitle').textContent = m.id ? '📝 社内見積り編集' : '📝 社内見積り作成';
+  const inp = 'width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:8px 10px;font-size:13px;';
+  const trOpts = torihikiData.map(t => `<option value="${_snEsc(t.name)}">`).join('');
+  document.getElementById('snModalBody').innerHTML = `
+    <div style="font-size:11px;color:var(--text-muted);margin-bottom:10px;">工場支援など、カレンダーに1日ずつ登録している仕事の見積書です。保存すると「受注」になります（見積り一覧の件数・受注率には数えません）。</div>
+    <div class="form-row">
+      <div><label>会社（見積書を出す側）</label><div id="sn_kaisha_toggle" style="display:flex;gap:6px;"></div></div>
+      <div><label>取引先 *</label>
+        <input id="sn_torihiki" list="sn_torihiki_list" value="${_snEsc(m.torihiki)}" placeholder="例：テクノウッドワークス株式会社" onchange="_snOnTorihiki()" style="${inp}">
+        <datalist id="sn_torihiki_list">${trOpts}</datalist></div>
+    </div>
+    <div class="form-row">
+      <div><label>宛先（担当者名）</label><input id="sn_aiteTanto" value="${_snEsc(m.aiteTanto)}" placeholder="例：八木澤工場長 様" style="${inp}"></div>
+      <div><label>物件名（見積書の上の欄）</label><input id="sn_bukken" value="${_snEsc(m.bukken)}" placeholder="例：本社工場支援" style="${inp}"></div>
+    </div>
+    <div class="form-row">
+      <div><label>対象月</label><input type="month" id="sn_ym" value="${_snEsc(m.shanaiYm || '')}" onchange="_snOnYm()" style="${inp}"></div>
+      <div><label>見積日</label><input type="date" id="sn_date" value="${_snEsc(m.date || '')}" style="${inp}"></div>
+    </div>
+    <div style="margin:6px 0 12px;padding:10px 12px;background:rgba(245,166,35,0.06);border:1px solid rgba(245,166,35,0.35);border-radius:8px;">
+      <button type="button" class="btn btn-secondary btn-sm" onclick="snLoadCalendar()">📅 カレンダーから取り込む</button>
+      <span style="font-size:11px;color:var(--text-muted);margin-left:6px;">取引先・会社・対象月の「その他」の記録（工場支援・工場研修など）を集めます</span>
+      <div id="sn_calPick" style="margin-top:8px;"></div>
+    </div>
+    <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:6px;">
+      <strong style="font-size:13px;">明細</strong>
+      <span style="flex:1;"></span>
+      <input id="sn_bulkDesc" placeholder="内容をまとめて変える（例：工場支援）" style="width:220px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:5px 8px;font-size:12px;">
+      <button type="button" class="btn btn-secondary btn-sm" onclick="snBulkDesc()">全行に入れる</button>
+    </div>
+    <div id="sn_lines"></div>
+    <button type="button" class="btn btn-secondary btn-sm" onclick="snAddLine()" style="margin-top:4px;">＋ 行を追加</button>
+    <div id="sn_totals" style="text-align:right;margin:10px 0;font-size:13px;"></div>
+    <div><label>特記事項（見積書に記載）</label><textarea id="sn_memo" rows="2" style="${inp}resize:vertical;">${_snEsc(m.memo || '')}</textarea></div>
+    <div style="display:flex;gap:8px;margin-top:12px;">
+      <button class="btn btn-primary btn-full" onclick="saveShanaiMt()">💾 保存する（受注）</button>
+      <button class="btn btn-secondary" onclick="closeShanaiMt()" style="flex-shrink:0;padding:8px 16px;">キャンセル</button>
+    </div>`;
+  _snSetKaisha(m.kaisha === 'ARK' ? 'ARK' : 'TWW');
+  _snRenderLines();
+  ov.style.display = 'flex';
+}
+function _snSetKaisha(k) {
+  const el = document.getElementById('sn_kaisha_toggle');
+  if (!el) return;
+  const opts = [{ k: 'TWW', label: '🔵 TWW', color: '#4fc3f7' }, { k: 'ARK', label: '🟢 ARK', color: '#66bb6a' }];
+  el.innerHTML = `<input type="hidden" id="sn_kaisha" value="${k}">` + opts.map(o => `<button type="button" onclick="_snSetKaisha('${o.k}')" style="flex:1;padding:8px;font-size:12px;font-weight:700;border-radius:6px;cursor:pointer;border:1.5px solid ${o.color};background:${o.k === k ? o.color : 'transparent'};color:${o.k === k ? '#000' : o.color};">${o.label}</button>`).join('');
+  const pick = document.getElementById('sn_calPick');
+  if (pick && window._snState && window._snState.calNames) { window._snState.calNames = null; pick.innerHTML = ''; }
+}
+// 取引先を選んだら、同じ取引先の前回の社内見積りから宛先・特記事項を入れる（空欄のときだけ）
+function _snOnTorihiki() {
+  const t = document.getElementById('sn_torihiki').value.trim();
+  const tr = _baTorihikiRec(t);
+  const prev = mitsumoriData.filter(x => x.type === 'shanai' && x.id !== (window._snState || {}).id && (x.torihiki === t || (tr && _baTorihikiRec(x.torihiki) === tr)))
+    .sort((a, b) => (b.id || 0) - (a.id || 0))[0];
+  if (prev) {
+    const a = document.getElementById('sn_aiteTanto'), mm = document.getElementById('sn_memo');
+    if (a && !a.value.trim() && prev.aiteTanto) a.value = prev.aiteTanto;
+    if (mm && !mm.value.trim() && prev.memo) mm.value = prev.memo;
+  }
+  const pick = document.getElementById('sn_calPick');
+  if (pick) { pick.innerHTML = ''; if (window._snState) window._snState.calNames = null; }
+}
+function _snOnYm() {
+  const ym = document.getElementById('sn_ym').value;
+  const d = document.getElementById('sn_date');
+  if (d && ym && (!window._snState || !window._snState.id)) d.value = _snMonthEnd(ym); // 新規のときは見積日を月末に
+  const pick = document.getElementById('sn_calPick');
+  if (pick) { pick.innerHTML = ''; if (window._snState) window._snState.calNames = null; }
+}
+// カレンダーの記録を集める（予約は除く）
+function _snCalRecs(torihiki, ym) {
+  const tr = _baTorihikiRec(torihiki);
+  return bukkenData.filter(b => !b.yoyaku && b.kotei === 'other' && b.date && b.date.slice(0, 7) === ym
+    && (b.torihiki === torihiki || (tr && _baTorihikiRec(b.torihiki) === tr)));
+}
+// その日の金額：合算の取引先は1日1件の金額。合算でない取引先で何日かまとめて登録した記録は、日ごとの金額が分からない（null）
+function _snRecAmount(b) {
+  const amt = parseInt(b.mitumori) || 0;
+  if (_torihikiIsSumMode(b.torihiki)) return amt;
+  const same = bukkenData.filter(x => x.groupId != null && x.groupId === b.groupId).length;
+  return same > 1 ? null : amt;
+}
+function snLoadCalendar() {
+  const t = document.getElementById('sn_torihiki').value.trim();
+  const ym = document.getElementById('sn_ym').value;
+  const kaisha = document.getElementById('sn_kaisha').value;
+  const pick = document.getElementById('sn_calPick');
+  if (!t) { showToast('⚠️ 取引先を入れてください', true); return; }
+  if (!ym) { showToast('⚠️ 対象月を入れてください', true); return; }
+  const all = _snCalRecs(t, ym);
+  const recs = all.filter(b => (b.kaisha || 'TWW') === kaisha);
+  const otherCo = all.length - recs.length;
+  const otherNote = otherCo ? `<div style="font-size:11px;color:#f57c00;margin-top:4px;">※ ${kaisha === 'TWW' ? 'ARK' : 'TWW'}の記録がほかに${otherCo}件あります（会社を切り替えると出ます）</div>` : '';
+  if (!recs.length) {
+    pick.innerHTML = `<div style="font-size:12px;color:var(--text-muted);">この取引先・会社・月の「その他」の記録はありません。</div>${otherNote}`;
+    window._snState.calNames = null;
+    return;
+  }
+  const byName = new Map();
+  recs.forEach(b => {
+    const v = byName.get(b.bukken) || { name: b.bukken, days: 0, ninzuu: 0, amount: 0 };
+    v.days++; v.ninzuu += parseFloat(b.ninzuu) || 0; v.amount += _snRecAmount(b) || 0;
+    byName.set(b.bukken, v);
+  });
+  const names = [...byName.values()].sort((a, b) => b.amount - a.amount);
+  window._snState.calNames = names.map(n => n.name);
+  pick.innerHTML = `<div style="font-size:12px;margin-bottom:4px;">取り込む物件名を選んでください（金額0円のものは最初はチェックなし）</div>`
+    + names.map((n, i) => `<label style="display:flex;align-items:center;gap:6px;font-size:12px;padding:3px 0;cursor:pointer;">
+        <input type="checkbox" class="sn_calName" data-i="${i}" ${n.amount > 0 ? 'checked' : ''}>
+        <strong>${_snEsc(n.name)}</strong><span style="color:var(--text-muted);">${n.days}日・${n.ninzuu}人・${formatMoney(n.amount)}</span></label>`).join('')
+    + otherNote
+    + `<button type="button" class="btn btn-primary btn-sm" onclick="snApplyCalendar()" style="margin-top:6px;">この内容で明細を作る</button>`;
+}
+function snApplyCalendar() {
+  const st = window._snState;
+  if (!st || !st.calNames) return;
+  const chosen = new Set([...document.querySelectorAll('.sn_calName')].filter(cb => cb.checked).map(cb => st.calNames[parseInt(cb.dataset.i)]));
+  if (!chosen.size) { showToast('⚠️ 物件名を1つ以上選んでください', true); return; }
+  if (st.lines.length && !confirm('今の明細を、カレンダーの内容で作り直します。\n手で入れた備考は、同じ日付・内容の行に残します。よろしいですか？')) return;
+  const t = document.getElementById('sn_torihiki').value.trim();
+  const ym = document.getElementById('sn_ym').value;
+  const kaisha = document.getElementById('sn_kaisha').value;
+  const recs = _snCalRecs(t, ym).filter(b => (b.kaisha || 'TWW') === kaisha && chosen.has(b.bukken))
+    .sort((a, b) => a.date.localeCompare(b.date) || String(a.bukken).localeCompare(String(b.bukken)));
+  const oldBiko = new Map(st.lines.filter(l => (l.biko || '').trim()).map(l => [`${l.date}|${l.desc}`, l.biko]));
+  let warn = 0;
+  st.lines = recs.map(b => {
+    const qty = parseFloat(b.ninzuu) || 0;
+    const amt = _snRecAmount(b);
+    let tanka = '', w = false;
+    if (amt != null && qty > 0) {
+      tanka = Math.round(amt / qty);
+      if (tanka * qty !== amt) w = true;
+    } else w = true;
+    if (w) warn++;
+    const biko = (b.rowComment || '').trim() || oldBiko.get(`${b.date}|${b.bukken}`) || '';
+    return { date: b.date, desc: b.bukken, qty, unit: '人', tanka, biko, _w: w }; // _w：単価を確認してほしい行（保存しない）
+  });
+  const bk = document.getElementById('sn_bukken');
+  if (bk && !bk.value.trim()) bk.value = [...chosen][0] || '';
+  _snRenderLines();
+  showToast(warn ? `⚠️ ${st.lines.length}行を作りました。${warn}行は単価を確認してください（金額が人数で割り切れない・日ごとの金額が分からない）` : `📅 ${st.lines.length}行を作りました`, !!warn);
+}
+function snAddLine() {
+  const st = window._snState; if (!st) return;
+  const last = st.lines[st.lines.length - 1];
+  st.lines.push({ date: '', desc: last ? last.desc : '工場支援', qty: '', unit: '人', tanka: last ? last.tanka : '', biko: '' });
+  _snRenderLines();
+}
+function snRemoveLine(i) { const st = window._snState; if (!st) return; st.lines.splice(i, 1); _snRenderLines(); }
+function snUpdateLine(i, field, value) {
+  const st = window._snState; if (!st || !st.lines[i]) return;
+  st.lines[i][field] = value;
+  if (field === 'tanka') st.lines[i]._w = false;
+  if (field === 'qty' || field === 'tanka') _snRenderLines(); // 金額を更新（文字の欄は再描画しない＝入力中のカーソル維持）
+}
+function snBulkDesc() {
+  const st = window._snState; if (!st) return;
+  const v = document.getElementById('sn_bulkDesc').value.trim();
+  if (!v) { showToast('⚠️ 内容を入れてください', true); return; }
+  st.lines.forEach(l => { l.desc = v; });
+  _snRenderLines();
+}
+function _snRenderLines() {
+  const st = window._snState; if (!st) return;
+  const el = document.getElementById('sn_lines');
+  const cell = 'padding:6px;background:var(--bg-card);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;box-sizing:border-box;width:100%;';
+  el.innerHTML = st.lines.length ? `
+    <div style="display:grid;grid-template-columns:118px 1.4fr 60px 56px 80px 84px 1fr 28px;gap:4px;font-size:10px;color:var(--text-muted);margin-bottom:2px;">
+      <div>日付</div><div>内容</div><div>数量</div><div>単位</div><div>単価</div><div style="text-align:right;">金額</div><div>備考</div><div></div></div>`
+    + st.lines.map((l, i) => `
+    <div style="display:grid;grid-template-columns:118px 1.4fr 60px 56px 80px 84px 1fr 28px;gap:4px;margin-bottom:4px;align-items:center;">
+      <input type="date" value="${_snEsc(l.date)}" onchange="snUpdateLine(${i},'date',this.value)" style="${cell}">
+      <input value="${_snEsc(l.desc)}" onchange="snUpdateLine(${i},'desc',this.value)" style="${cell}">
+      <input type="number" step="0.1" value="${_snEsc(l.qty)}" onchange="snUpdateLine(${i},'qty',this.value)" style="${cell}">
+      <select onchange="snUpdateLine(${i},'unit',this.value)" style="${cell}">${[...new Set(['人', '人工', ...MT_FREE_ITEM_UNITS])].map(u => `<option ${l.unit === u ? 'selected' : ''}>${u}</option>`).join('')}</select>
+      <input type="number" value="${_snEsc(l.tanka)}" onchange="snUpdateLine(${i},'tanka',this.value)" style="${cell}${(l.tanka === '' || l._w) ? 'border-color:#f57c00;border-width:2px;' : ''}" title="${l._w ? '金額が人数で割り切れない、または日ごとの金額が分からない行です。単価を確認してください' : ''}">
+      <div style="text-align:right;font-size:12px;font-weight:700;font-family:'DM Mono',monospace;">${formatMoney(_snLineAmount(l))}</div>
+      <input value="${_snEsc(l.biko)}" placeholder="備考" onchange="snUpdateLine(${i},'biko',this.value)" style="${cell}">
+      <button type="button" onclick="snRemoveLine(${i})" style="padding:4px 6px;background:rgba(198,40,40,0.2);color:#ef5350;border:1px solid #ef5350;border-radius:4px;font-size:11px;cursor:pointer;">✕</button>
+    </div>`).join('')
+    : '<div style="font-size:12px;color:var(--text-muted);padding:6px 0;">明細がありません。「📅 カレンダーから取り込む」か「＋ 行を追加」で作ります。</div>';
+  const sub = st.lines.reduce((s, l) => s + _snLineAmount(l), 0);
+  const tax = Math.floor(sub * 0.1);
+  document.getElementById('sn_totals').innerHTML = `小計 <strong>${formatMoney(sub)}</strong>　消費税 ${formatMoney(tax)}　合計 <strong style="color:var(--accent);font-size:15px;">${formatMoney(sub + tax)}</strong>`;
+}
+function saveShanaiMt() {
+  const st = window._snState; if (!st) return;
+  const torihiki = document.getElementById('sn_torihiki').value.trim();
+  if (!torihiki) { showToast('⚠️ 取引先を入れてください', true); return; }
+  const lines = st.lines.filter(l => (l.desc || '').trim() || (parseFloat(l.tanka) || 0) !== 0 || l.date)
+    .map(l => ({ date: l.date || '', desc: (l.desc || '').trim(), qty: parseFloat(l.qty) || 0, unit: l.unit || '人', tanka: parseFloat(l.tanka) || 0, biko: (l.biko || '').trim() }));
+  if (!lines.length) { showToast('⚠️ 明細がありません', true); return; }
+  const subtotal = lines.reduce((s, l) => s + _snLineAmount(l), 0);
+  const tr = _baTorihikiRec(torihiki);
+  const id = st.id || Date.now();
+  const old = st.id ? mitsumoriData.find(x => x.id === st.id) : null;
+  const rec = {
+    ...(old || {}),
+    id, type: 'shanai',
+    kaisha: document.getElementById('sn_kaisha').value || 'TWW',
+    torihiki: tr ? tr.name : torihiki,
+    bukken: document.getElementById('sn_bukken').value.trim(),
+    aiteTanto: document.getElementById('sn_aiteTanto').value.trim(),
+    date: document.getElementById('sn_date').value || '',
+    shanaiYm: document.getElementById('sn_ym').value || '',
+    shanaiLines: lines,
+    memo: document.getElementById('sn_memo').value.trim(),
+    items: [], comments: [],
+    subtotal, total: subtotal + Math.floor(subtotal * 0.1),
+    status: old ? (old.status || 'won') : 'won',
+  };
+  if (old) mitsumoriData[mitsumoriData.indexOf(old)] = rec; else mitsumoriData.push(rec);
+  saveMitsumori();
+  _mtSaveOne(rec);
+  closeShanaiMt();
+  renderMitsumoriList();
+  showToast(old ? '✅ 社内見積りを保存しました' : '✅ 社内見積りを保存しました（受注）');
+}
+
 // --- モーダルを開く ---
 function openMitsumoriNew(type) {
   const today = new Date().toISOString().slice(0,10);
@@ -22330,6 +22611,7 @@ function openMitsumoriNew(type) {
 function openMitsumoriEdit(id) {
   const m = mitsumoriData.find(x => x.id === id);
   if (!m) return;
+  if (m.type === 'shanai') { openShanaiMtEdit(id); return; } // 社内見積り（2026-11-26-01）
   renderMitsumoriModal(JSON.parse(JSON.stringify(m)));
   document.getElementById('mitsumoriModal').style.display = 'flex';
   document.getElementById('mtModalTitle').textContent = m.type === 'uke' ? '📝 請け見積り編集' : '📝 人工見積り編集';
@@ -24814,6 +25096,16 @@ function _mtPdfFileTitle(m, docType) {
 
 // --- 見積り明細行の再構築（見積書・注文書・注文請書で共通利用） ---
 function buildMtPdfLines(m) {
+  // 社内見積り（2026-11-26-01）：1日1行「10/1　工場支援」・数量は小数1桁
+  if (m.type === 'shanai') {
+    const lines = (m.shanaiLines || []).map(l => {
+      const q = parseFloat(l.qty) || 0, t = parseFloat(l.tanka) || 0;
+      const md = l.date ? `${parseInt(l.date.slice(5, 7))}/${parseInt(l.date.slice(8, 10))}　` : '';
+      return [md + (l.desc || ''), q.toFixed(1), l.unit || '人', Math.round(t), Math.round(q * t), l.biko || ''];
+    });
+    const subtotal = m.subtotal || 0;
+    return { lines, subtotal, tax: Math.floor(subtotal * 0.1), total: m.total || 0, genbaAddress: '' };
+  }
   const isUke = m.type === 'uke';
   const getV = (key, def='') => { const it = (m.items||[]).find(x=>x.key===key); return it ? it.value : def; };
 
