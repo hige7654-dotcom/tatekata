@@ -12,7 +12,7 @@
 // ★重要：更新をデプロイして反映を確認したら、必ずこの値を変更してください（日付や連番など何でもOK）。
 // 開いている全員の画面が、この値の変化を数分おきに自動検知して、勝手に再読み込みしてくれます。
 // （「リロードしてください」と一人ずつ声をかけなくても、自動で最新版に切り替わる仕組みです）
-const BUILD_VERSION = '2026-11-25-01';
+const BUILD_VERSION = '2026-11-25-02';
 
 firebase.initializeApp({
   apiKey: "AIzaSyD_yVJymE0OR8LjEAYwt0-5XBuNOQ4K3-s",
@@ -1836,6 +1836,15 @@ firebase.initializeApp({
     <!-- 入力フォーム -->
     <div id="chouseiForm" style="display:none;">
       <div class="card" style="border-left:4px solid #7b1fa2;">
+        <!-- 【2026-11-25-02】見積りから入力（売上調整に見積りをつなげる） -->
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
+          <button type="button" class="btn btn-secondary btn-sm" onclick="openChouseiMtPicker()">📝 見積りから入力</button>
+          <span id="chouseiMtLabel" style="font-size:12px;color:var(--text-muted);"></span>
+          <input type="hidden" id="chousei_mtId" value="">
+        </div>
+        <label id="chouseiMtWonWrap" style="display:none;align-items:center;gap:6px;font-size:12px;font-weight:700;color:#81c784;margin:-4px 0 10px;cursor:pointer;">
+          <input type="checkbox" id="chousei_mtWon" checked> 保存するときに、この見積りを「受注」にする
+        </label>
         <div class="form-row">
           <div>
             <label>取引先 *</label>
@@ -13195,6 +13204,8 @@ function toggleChouseiForm() {
     setMonthPickerValue('chousei_taisho_month', lastMonth);
     document.getElementById('chousei_amount').value = '';
     document.getElementById('chousei_memo').value = '';
+    _chouseiMtSetLink(null);
+    _chouseiMtEditMode = false;
   }
 }
 
@@ -13211,19 +13222,22 @@ function addChousei() {
   if (!keijoMonth) { showToast('⚠️ 計上月を入力してください', true); return; }
   if (!taishoMonth) { showToast('⚠️ 対象月を入力してください', true); return; }
 
+  const mtId = _chouseiMtReadForm();
   chouseiData.push({
     id: Date.now(),
     torihiki, amount, keijoMonth, taishoMonth, memo, kaisha,
+    ...(mtId ? { mtId } : {}),
     createdAt: new Date().toISOString(),
   });
   saveChousei();
+  const mtWon = _chouseiMtApplyWon(mtId); // フォームを閉じる前に（チェックの状態を読むため）
   toggleChouseiForm();
   refreshChouseiList();
   // 【バグ修正】月次/年間ビューに応じて適切な再描画関数を呼ぶ
   if (document.getElementById('page-uriage').classList.contains('active')) {
     if (uriageTab === 'month') renderUriageMonth(); else renderUriage();
   }
-  showToast('✅ 売上調整を登録しました');
+  showToast('✅ 売上調整を登録しました' + (mtWon ? '（見積りを受注にしました）' : ''));
 }
 
 function deleteChousei(id) {
@@ -13239,6 +13253,156 @@ function deleteChousei(id) {
     if (uriageTab === 'month') renderUriageMonth(); else renderUriage();
   }
   showToast('✅ 削除しました');
+}
+
+// ===== 売上調整 ⇔ 見積り（2026-11-25-02） =====
+// 売上調整に見積りをつなげる（c.mtId＝見積りのid。つながっていなければ無し／null）。
+// 登録・編集画面の［📝 見積りから入力］で見積りを選ぶと、取引先・会社・金額（税抜の小計）・メモ（空のときだけ物件名）を入れる。
+// 計上月・対象月は変えない。金額は分けて計上するときなどに手で直してよい（同じ見積りに売上調整が何件つながってもよい）。
+// 保存するとき、つながった見積りが受注でなければ「受注にする」チェック（初期オン）で受注にする。
+// 既存の売上調整を編集しているときは、見積りを選んでもつなげるだけで、取引先・会社・金額・メモは変えない（後始末で金額が変わらないように）。
+let _chouseiMtEditMode = false;
+const _chEsc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+function _chouseiMtOf(id) {
+  if (id == null || id === '') return null;
+  return mitsumoriData.find(m => String(m.id) === String(id)) || null;
+}
+function _chouseiMtShort(id) {
+  const m = _chouseiMtOf(id);
+  return m ? _chEsc(m.bukken || '（物件名なし）') : '⚠️ 見つかりません（削除された可能性）';
+}
+function _chouseiMtReadForm() {
+  const v = (document.getElementById('chousei_mtId') || {}).value;
+  return v ? Number(v) : null;
+}
+// つながりの表示（m：見積り、keepId：見積りが見つからないときも残すid）
+function _chouseiMtSetLink(m, keepId) {
+  const idEl = document.getElementById('chousei_mtId');
+  if (!idEl) return;
+  const lbl = document.getElementById('chouseiMtLabel');
+  const wrap = document.getElementById('chouseiMtWonWrap');
+  const cb = document.getElementById('chousei_mtWon');
+  const missing = !m && keepId != null && keepId !== '';
+  idEl.value = m ? String(m.id) : (missing ? String(keepId) : '');
+  const unlink = `<a href="javascript:void(0)" onclick="_chouseiMtSetLink(null)" style="color:var(--text-muted);margin-left:6px;">外す</a>`;
+  if (lbl) lbl.innerHTML = m
+    ? `🔗 ${_chEsc(m.torihiki)}｜${_chEsc(m.bukken || '（物件名なし）')}　${getMtStatusBadge(m.status || 'draft')}${unlink}`
+    : (missing ? `<span style="color:#f57c00;">🔗 つながっている見積りが見つかりません（削除された可能性）</span>${unlink}` : '');
+  const needWon = !!m && m.status !== 'won';
+  if (wrap) wrap.style.display = needWon ? 'flex' : 'none';
+  if (cb) cb.checked = needWon;
+}
+// 保存時：チェックが入っていれば見積りを受注にする。受注にしたら true
+function _chouseiMtApplyWon(mtId) {
+  const cb = document.getElementById('chousei_mtWon');
+  const wrap = document.getElementById('chouseiMtWonWrap');
+  if (!mtId || !cb || !cb.checked || !wrap || wrap.style.display === 'none') return false;
+  const m = _chouseiMtOf(mtId);
+  if (!m || m.status === 'won') return false;
+  setMtStatus(m.id, 'won');
+  return true;
+}
+function openChouseiMtPicker() {
+  let ov = document.getElementById('chouseiMtPickerModal');
+  if (!ov) {
+    ov = document.createElement('div');
+    ov.className = 'modal-overlay';
+    ov.id = 'chouseiMtPickerModal';
+    ov.style.zIndex = '400';
+    ov.onclick = e => { if (e.target === ov) closeChouseiMtPicker(); };
+    ov.innerHTML = `
+      <div class="modal" style="max-width:640px;">
+        <div class="modal-title">
+          <span>📝 見積りから入力</span>
+          <button class="modal-close" onclick="closeChouseiMtPicker()">✕</button>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
+          <input type="text" id="chouseiMtPickerQ" placeholder="取引先・物件名で絞り込む" oninput="renderChouseiMtPicker()"
+            style="flex:1;min-width:180px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:8px 10px;font-size:13px;">
+          <label style="font-size:12px;color:var(--text-muted);display:flex;align-items:center;gap:4px;cursor:pointer;">
+            <input type="checkbox" id="chouseiMtPickerAll" onchange="renderChouseiMtPicker()"> 全取引先
+          </label>
+        </div>
+        <div id="chouseiMtPickerHint" style="font-size:11px;color:var(--text-muted);margin-bottom:6px;"></div>
+        <div id="chouseiMtPickerList" style="max-height:60vh;overflow-y:auto;"></div>
+      </div>`;
+    document.body.appendChild(ov);
+  }
+  document.getElementById('chouseiMtPickerQ').value = '';
+  document.getElementById('chouseiMtPickerAll').checked = !document.getElementById('chousei_torihiki').value;
+  document.getElementById('chouseiMtPickerHint').textContent = _chouseiMtEditMode
+    ? '失注の見積りは出ません。編集中なので、選んでもつなげるだけです（取引先・会社・金額・メモは変わりません）。'
+    : '失注の見積りは出ません。選ぶと取引先・会社・金額（税抜の小計）・メモ（空のときだけ物件名）が入ります。計上月・対象月は変わりません。';
+  renderChouseiMtPicker();
+  ov.classList.add('open');
+}
+function closeChouseiMtPicker() {
+  const ov = document.getElementById('chouseiMtPickerModal');
+  if (ov) ov.classList.remove('open');
+}
+function renderChouseiMtPicker() {
+  const el = document.getElementById('chouseiMtPickerList');
+  if (!el) return;
+  const q = _mtNormName(document.getElementById('chouseiMtPickerQ').value).toLowerCase();
+  const tname = document.getElementById('chousei_torihiki').value;
+  const all = document.getElementById('chouseiMtPickerAll').checked || !tname;
+  const tr = tname ? _baTorihikiRec(tname) : null;
+  let list = mitsumoriData.filter(m => (m.status || 'draft') !== 'lost');
+  if (!all) list = list.filter(m => m.torihiki === tname || (tr && _baTorihikiRec(m.torihiki) === tr));
+  if (q) list = list.filter(m => _mtNormName(`${m.torihiki || ''}${m.bukken || ''}`).toLowerCase().includes(q));
+  list = [...list].sort((a, b) => (b.id || 0) - (a.id || 0));
+  const total = list.length;
+  list = list.slice(0, 200);
+  // すでにつながっている売上調整（分けて計上しているときの目安）
+  const linked = new Map();
+  (chouseiData || []).forEach(c => {
+    if (c.mtId == null) return;
+    const k = String(c.mtId);
+    const v = linked.get(k) || { n: 0, sum: 0 };
+    v.n++; v.sum += parseInt(c.amount) || 0;
+    linked.set(k, v);
+  });
+  if (!list.length) {
+    el.innerHTML = `<div style="color:var(--text-muted);font-size:13px;padding:12px 4px;">該当する見積りがありません${all ? '' : '（「全取引先」にすると他の取引先も出ます）'}</div>`;
+    return;
+  }
+  el.innerHTML = list.map(m => {
+    const lk = linked.get(String(m.id));
+    return `<div onclick="pickChouseiMt(${m.id})" style="padding:8px 10px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px;cursor:pointer;background:var(--surface2);">
+      <div style="display:flex;align-items:center;gap:8px;">
+        <div style="flex:1;min-width:0;">
+          <div style="font-size:13px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${_chEsc(m.bukken || '（物件名なし）')}</div>
+          <div style="font-size:11px;color:var(--text-muted);">${_chEsc(m.torihiki)}　${m.kaisha === 'ARK' ? 'ARK' : 'TWW'}${m.date ? '　見積日 ' + m.date.replace(/-/g, '/') : ''}</div>
+          ${lk ? `<div style="font-size:11px;color:#ce93d8;">🔗 売上調整 ${lk.n}件（計 ${formatMoney(lk.sum)}）とつながっています</div>` : ''}
+        </div>
+        ${getMtStatusBadge(m.status || 'draft')}
+        <div style="font-size:13px;font-weight:900;font-family:'DM Mono',monospace;white-space:nowrap;">${formatMoney(m.subtotal || 0)}</div>
+      </div>
+    </div>`;
+  }).join('') + (total > list.length ? `<div style="font-size:11px;color:var(--text-muted);padding:4px;">新しい順に200件まで表示しています（全${total}件）。絞り込んでください。</div>` : '');
+}
+function pickChouseiMt(id) {
+  const m = _chouseiMtOf(id);
+  if (!m) return;
+  const tr = _baTorihikiRec(m.torihiki);
+  if (_chouseiMtEditMode) {
+    _chouseiMtSetLink(m);
+    closeChouseiMtPicker();
+    const cur = document.getElementById('chousei_torihiki').value;
+    const curTr = _baTorihikiRec(cur);
+    const sameTr = cur === m.torihiki || (tr && curTr === tr);
+    showToast(sameTr ? '🔗 見積りをつなげました（金額などは変えていません）' : '⚠️ 見積りをつなげました。取引先が売上調整と違います', !sameTr);
+    return;
+  }
+  chouseiDropdownSelect(tr ? tr.name : (m.torihiki || ''));
+  const kaishaEl = document.getElementById('chousei_kaisha');
+  if (kaishaEl) kaishaEl.value = m.kaisha === 'ARK' ? 'ARK' : 'TWW';
+  document.getElementById('chousei_amount').value = m.subtotal || 0;
+  const memoEl = document.getElementById('chousei_memo');
+  if (memoEl && !memoEl.value.trim()) memoEl.value = m.bukken || '';
+  _chouseiMtSetLink(m);
+  closeChouseiMtPicker();
+  showToast('📝 見積りの内容を入れました（金額・メモは直せます）');
 }
 
 // 現在のタブに応じて調整一覧を再描画するヘルパー（月次タブ中は当月のみ表示）
@@ -13288,6 +13452,7 @@ function renderChouseiList(filterMonth) {
         <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">
           📅 計上：${ky}年${parseInt(km)}月　→　対象：${ty}年${parseInt(tm)}月
           ${c.memo ? `　📝 ${c.memo}` : ''}
+          ${c.mtId ? `　🔗 見積り：${_chouseiMtShort(c.mtId)}` : ''}
         </div>
         <div style="margin-top:5px;display:flex;gap:6px;flex-wrap:wrap;">${scBadge}${uiBadge}</div>
       </div>
@@ -13353,6 +13518,8 @@ function openChouseiEdit(id) {
   setMonthPickerValue('chousei_taisho_month', c.taishoMonth);
   document.getElementById('chousei_memo').value = c.memo || '';
   if (document.getElementById('chousei_kaisha')) document.getElementById('chousei_kaisha').value = c.kaisha || 'TWW';
+  _chouseiMtSetLink(_chouseiMtOf(c.mtId), c.mtId);
+  _chouseiMtEditMode = true; // 編集中は見積りを選んでも中身を変えない（つなげるだけ）
   // 保存ボタンを「更新」に差し替え
   const btn = f.querySelector('button.btn-primary');
   btn.textContent = '💾 この内容で更新する';
@@ -13372,8 +13539,10 @@ function updateChousei(id) {
   if (!keijoMonth || !taishoMonth) { showToast('⚠️ 月を入力してください', true); return; }
   const idx = chouseiData.findIndex(x => x.id === id);
   if (idx < 0) return;
-  chouseiData[idx] = { ...chouseiData[idx], torihiki, amount, keijoMonth, taishoMonth, memo, kaisha };
+  const mtId = _chouseiMtReadForm();
+  chouseiData[idx] = { ...chouseiData[idx], torihiki, amount, keijoMonth, taishoMonth, memo, kaisha, mtId: mtId || null };
   saveChousei();
+  const mtWon = _chouseiMtApplyWon(mtId);
   // フォームをリセット
   const f = document.getElementById('chouseiForm');
   f.style.display = 'none';
@@ -13385,7 +13554,7 @@ function updateChousei(id) {
   if (document.getElementById('page-uriage').classList.contains('active')) {
     if (uriageTab === 'month') renderUriageMonth(); else renderUriage();
   }
-  showToast('✅ 売上調整を更新しました');
+  showToast('✅ 売上調整を更新しました' + (mtWon ? '（見積りを受注にしました）' : ''));
 }
 
 // 【バグ修正】chouseiData（売上調整）には会社(TWW/ARK)区分が無く、常にTWW・ARK両方の集計に
