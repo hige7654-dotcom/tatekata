@@ -12,7 +12,7 @@
 // ★重要：更新をデプロイして反映を確認したら、必ずこの値を変更してください（日付や連番など何でもOK）。
 // 開いている全員の画面が、この値の変化を数分おきに自動検知して、勝手に再読み込みしてくれます。
 // （「リロードしてください」と一人ずつ声をかけなくても、自動で最新版に切り替わる仕組みです）
-const BUILD_VERSION = '2026-11-26-03';
+const BUILD_VERSION = '2026-11-26-05';
 
 firebase.initializeApp({
   apiKey: "AIzaSyD_yVJymE0OR8LjEAYwt0-5XBuNOQ4K3-s",
@@ -22688,6 +22688,7 @@ function closeMitsumoriModal() {
 
 // --- モーダル内フォームレンダリング ---
 function renderMitsumoriModal(m) {
+  window._mtCurrentLines = []; // 前に開いた見積りの明細で矛盾チェックしないように（2026-11-26-05）
   const torihikiOptions = torihikiData.map(t => `<option value="${t.name}" ${t.name===m.torihiki?'selected':''}>${t.name}</option>`).join('');
   const tanka = getMtTanka(m.torihiki);
 
@@ -22890,6 +22891,7 @@ function renderMitsumoriModal(m) {
         `).join('')}
       </div>
       <!-- 追加済みコメント一覧 -->
+      <div id="mt_commentWarn"></div>
       <div id="mt_commentList">${(m.comments||[]).map((c,i)=>`<div style="display:flex;gap:4px;margin-bottom:4px;"><input value="${c}" onchange="updateMtComment(${i},this.value)" style="flex:1;padding:6px 8px;background:var(--bg-card);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;box-sizing:border-box;" placeholder="コメントを入力"><button onclick="removeMtComment(${i})" style="padding:4px 8px;background:rgba(198,40,40,0.2);color:#ef5350;border:1px solid #ef5350;border-radius:4px;font-size:11px;cursor:pointer;">✕</button></div>`).join('')}</div>
     </div>
     <div style="display:flex;gap:8px;justify-content:flex-end;">
@@ -23670,22 +23672,24 @@ function onMtTorihikiChange() {
 }
 
 // --- コメントプリセット定義 ---
+// 【2026-11-26-05】全体を短く見直し（意味が変わらない範囲）。キャンセル料は1行にまとめて天候・日程変更の扱いを明記、
+//   偽装請負に見られやすい言い方（「応援」「現場指示」）を変更、金物の範囲を明確化、重複（パーキング代）を削除。
+//   旧文は MT_COMMENT_RENAMED に残し、旧文と新文が両方入っていたら⚠️（_mtCommentConflicts）。保存済みの見積りのコメントは変えない
 const MT_COMMENT_PRESETS = {
   '■請負条件': [
-    '本書は、作業員の派遣・貸出しではなく、記載の建方工事を請負うことを前提とするものです。',
-    '記載の人工数は工事費算定のための予定人工であり、作業員の提供人数を約するものではありません。',
-    '当社が自社の作業員を配置・管理し、当社の責任者（職長等）の指揮のもと施工します。',
-    '施工内容、工期、作業条件等に変更が生じた場合は、双方協議のうえ金額等を調整します。',
-    '本書の内容をもとに、発注書・請書等により工事内容および請負金額を確認するものとします。',
-    '本件は建方工事の請負に関するものであり、労働者派遣・職業紹介・単なる労務提供を目的とするものではありません。',
+    '本書は建方工事の請負であり、労働者派遣・職業紹介・単なる労務提供ではありません。',
+    '記載の人工数は工事費算定上の予定であり、提供人数を約するものではありません。',
+    '作業員は当社が配置・管理し、当社の職長等の指揮のもと施工します。',
+    '施工内容・工期等の変更時は、双方協議のうえ金額を調整します。',
+    '工事内容・請負金額は、発注書・請書等で確認します。',
   ],
   '■人工': [
-    '作業時間は朝の移動時間込み8時間応援とする。',
+    '人工数は移動時間込み1日8時間で算定しています。',
   ],
   '■基本': [
-    '御見積り有効期限は、提出後1ヶ月とする。',
-    'キャンセル料　5日前30％・3日前50％・前日100％を頂戴いたします。（天災を除く）',
-    '各部材は、プレカット製品とします。',
+    '御見積り有効期限：提出後1ヶ月',
+    'キャンセル料：お客様都合の中止は御見積金額の5～4日前30％・3～2日前50％・前日／当日100％。日程変更は3日前まで無償、以降は手配済み費用の実費。天災・悪天候（労安則の基準）時は手配済み費用の実費のみ。',
+    '部材はプレカット製品とします。',
     '基礎天端レベル±2㎜以内でお願い致します。',
     'N値金物取付は含みません。',
     '安全設備等の設置は別途頂きます。',
@@ -23696,33 +23700,77 @@ const MT_COMMENT_PRESETS = {
     'レベル調整の場合、別途頂戴いたします。',
   ],
   '■上棟': [
-    '上棟用金物以外の取付は含みません。',
+    '金物取付は羽子板ボルト・かすがい等の構造金物までとします。',
     '釘以外の金物はご支給願います。',
     '化粧ポーチ柱の加工お願いします。',
     '化粧束部の金物ご用意お願いします。',
     '建て入れ調整時立ち合いをお願い致します。',
     '下屋絡み以外の羽柄取付は含みません。',
     '下屋野地合板施工後足場支結お願い致します。',
-    '軒の出が無いため破風・鼻隠し現場指示願います。',
+    '軒の出が無いため、破風・鼻隠しの納まりは事前に図面等でご指示願います。',
     '軒の出が無いため破風・鼻隠しは施工いたしません。',
     '交通費は別途支給お願い致します。',
     '面材貼りは含みません。',
     '間柱、筋交い、窓台、まぐさの施工は別途と致します。',
     '屋根との取り合い部分の面材貼りは別途といたします。',
-    '屋根の通気層の施工は含んでおりません。',
-    '二重屋根は一層目までとさせて頂きます。',
+    '屋根の通気層の施工は含みません。',
+    '二重屋根は一層目までとします。',
     'トップライト開口は含みません。',
     '現場施工がある場合は別途請求致します。',
     '足場板の用意お願い致します。',
     '足場により施工できない部分あり。',
     '吹抜け部足場支給お願い致します。',
     'レッカー台数は前後の可能性があります。',
-    '駐車料金に関しては別途請求させて頂きます。',
-    '貴社手配の場合は帯及びクランプのご用意お願いします。',
-    'パーキング代別途支給。',
-    '金物は全て御支給願います。',
+    'レッカー作業の支障となる電線には、事前に防護管の設置をお願いします。',
+    '駐車料金は別途請求します。',
+    '貴社手配の場合は、帯・クランプのご用意をお願いします。',
+    '金物は釘を含め全て御支給願います（釘代は計上しません）。',
   ],
 };
+// 旧文 → 新文（2026-11-26-05 の見直し前の文）。古い見積りに新しい文を足したときの重複チェックに使う
+const MT_COMMENT_RENAMED = [
+  ['本書は、作業員の派遣・貸出しではなく、記載の建方工事を請負うことを前提とするものです。', '本書は建方工事の請負であり、労働者派遣・職業紹介・単なる労務提供ではありません。'],
+  ['本件は建方工事の請負に関するものであり、労働者派遣・職業紹介・単なる労務提供を目的とするものではありません。', '本書は建方工事の請負であり、労働者派遣・職業紹介・単なる労務提供ではありません。'],
+  ['記載の人工数は工事費算定のための予定人工であり、作業員の提供人数を約するものではありません。', '記載の人工数は工事費算定上の予定であり、提供人数を約するものではありません。'],
+  ['当社が自社の作業員を配置・管理し、当社の責任者（職長等）の指揮のもと施工します。', '作業員は当社が配置・管理し、当社の職長等の指揮のもと施工します。'],
+  ['施工内容、工期、作業条件等に変更が生じた場合は、双方協議のうえ金額等を調整します。', '施工内容・工期等の変更時は、双方協議のうえ金額を調整します。'],
+  ['本書の内容をもとに、発注書・請書等により工事内容および請負金額を確認するものとします。', '工事内容・請負金額は、発注書・請書等で確認します。'],
+  ['作業時間は朝の移動時間込み8時間応援とする。', '人工数は移動時間込み1日8時間で算定しています。'],
+  ['御見積り有効期限は、提出後1ヶ月とする。', '御見積り有効期限：提出後1ヶ月'],
+  ['キャンセル料　5日前30％・3日前50％・前日100％を頂戴いたします。（天災を除く）', 'キャンセル料：お客様都合の中止は御見積金額の5～4日前30％・3～2日前50％・前日／当日100％。日程変更は3日前まで無償、以降は手配済み費用の実費。天災・悪天候（労安則の基準）時は手配済み費用の実費のみ。'],
+  ['各部材は、プレカット製品とします。', '部材はプレカット製品とします。'],
+  ['上棟用金物以外の取付は含みません。', '金物取付は羽子板ボルト・かすがい等の構造金物までとします。'],
+  ['軒の出が無いため破風・鼻隠し現場指示願います。', '軒の出が無いため、破風・鼻隠しの納まりは事前に図面等でご指示願います。'],
+  ['屋根の通気層の施工は含んでおりません。', '屋根の通気層の施工は含みません。'],
+  ['二重屋根は一層目までとさせて頂きます。', '二重屋根は一層目までとします。'],
+  ['駐車料金に関しては別途請求させて頂きます。', '駐車料金は別途請求します。'],
+  ['パーキング代別途支給。', '駐車料金は別途請求します。'],
+  ['貴社手配の場合は帯及びクランプのご用意お願いします。', '貴社手配の場合は、帯・クランプのご用意をお願いします。'],
+  ['金物は全て御支給願います。', '金物は釘を含め全て御支給願います（釘代は計上しません）。'],
+];
+// コメント同士・コメントと明細の矛盾（2026-11-26-05。注意を出すだけで、保存・印刷は止めない）
+function _mtCommentConflicts(comments, lines) {
+  const set = new Set((comments || []).map(c => String(c || '').trim()).filter(Boolean));
+  const has = t => set.has(t);
+  const ls = lines || [];
+  const msgs = [];
+  const zen = has('金物は釘を含め全て御支給願います（釘代は計上しません）。') || has('金物は全て御支給願います。');
+  if (zen && has('釘以外の金物はご支給願います。')) msgs.push('金物の支給範囲が矛盾しています（「釘以外の金物はご支給」と「金物は全て御支給」）');
+  if ((has('軒の出が無いため、破風・鼻隠しの納まりは事前に図面等でご指示願います。') || has('軒の出が無いため破風・鼻隠し現場指示願います。'))
+      && has('軒の出が無いため破風・鼻隠しは施工いたしません。')) msgs.push('破風・鼻隠しを施工するかどうかが矛盾しています（「ご指示願います」と「施工いたしません」）');
+  if (zen && ls.some(l => /^釘代/.test(l.label || '') && (l.amount || 0) > 0)) msgs.push('「金物は全て御支給」なのに、明細に釘代があります');
+  if (has('交通費は別途支給お願い致します。') && ls.some(l => /交通費/.test(l.label || '') && (l.amount || 0) > 0)) msgs.push('「交通費は別途支給」なのに、明細に交通費があります');
+  MT_COMMENT_RENAMED.forEach(([o, n]) => {
+    if (has(o) && has(n)) msgs.push(`同じ内容のコメントが2つあります（古い文「${o.length > 24 ? o.slice(0, 24) + '…' : o}」を外してください）`);
+  });
+  return [...new Set(msgs)];
+}
+function _mtRenderCommentWarn() {
+  const el = document.getElementById('mt_commentWarn');
+  if (!el) return;
+  const msgs = _mtCommentConflicts(window._mtComments, window._mtCurrentLines);
+  el.innerHTML = msgs.length ? `<div style="margin-top:6px;padding:8px 10px;border:1px solid #e53935;border-radius:6px;background:rgba(229,57,53,0.08);color:#ef5350;font-size:12px;font-weight:700;line-height:1.6;">${msgs.map(m => '⚠️ ' + m.replace(/</g, '&lt;')).join('<br>')}</div>` : '';
+}
 
 function getMtPresetComments(category) {
   return MT_COMMENT_PRESETS[category] || [];
@@ -23771,10 +23819,12 @@ function removeMtComment(i) {
 }
 function updateMtComment(i, val) {
   window._mtComments[i] = val;
+  _mtRenderCommentWarn();
 }
 function refreshMtCommentList() {
   const el = document.getElementById('mt_commentList');
   if (!el) return;
+  _mtRenderCommentWarn();
   el.innerHTML = window._mtComments.map((c, i) =>
     '<div style="display:flex;gap:4px;margin-bottom:4px;">' +
     '<input value="' + c.replace(/"/g,'&quot;') + '" onchange="updateMtComment(' + i + ',this.value)" style="flex:1;padding:6px 8px;background:var(--bg-card);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;box-sizing:border-box;" placeholder="コメントを入力">' +
@@ -24388,6 +24438,7 @@ function calcMtTotal() {
   window._mtCurrentSubtotal = subtotal;
   window._mtCurrentTax = tax;
   window._mtCurrentTotal = total;
+  _mtRenderCommentWarn();
 
   totalArea.innerHTML = `
     <table style="width:100%;border-collapse:collapse;font-size:12px;">
@@ -24480,6 +24531,9 @@ function calcMtGenka() {
 function saveMitsumoriForm(id, type) {
   const torihiki = document.getElementById('mt_torihiki')?.value;
   if (!torihiki) { showToast('⚠️ 取引先を選択してください', true); return; }
+  // 【2026-11-26-05】コメントの矛盾は注意だけ（保存はできる）
+  const _cw = _mtCommentConflicts(window._mtComments, window._mtCurrentLines);
+  if (_cw.length && !confirm(`コメントに矛盾があります。\n\n${_cw.map(m => '・' + m).join('\n')}\n\nこのまま保存しますか？`)) return;
 
   // 取引先の単価を更新（デフォルト値として保存）
   if (!mitsumoriTanka[torihiki]) mitsumoriTanka[torihiki] = {};
