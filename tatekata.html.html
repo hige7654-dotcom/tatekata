@@ -12,7 +12,7 @@
 // ★重要：更新をデプロイして反映を確認したら、必ずこの値を変更してください（日付や連番など何でもOK）。
 // 開いている全員の画面が、この値の変化を数分おきに自動検知して、勝手に再読み込みしてくれます。
 // （「リロードしてください」と一人ずつ声をかけなくても、自動で最新版に切り替わる仕組みです）
-const BUILD_VERSION = '2026-11-26-02';
+const BUILD_VERSION = '2026-11-26-03';
 
 firebase.initializeApp({
   apiKey: "AIzaSyD_yVJymE0OR8LjEAYwt0-5XBuNOQ4K3-s",
@@ -15892,6 +15892,7 @@ function openInvoiceCreate(early) {
         <span style="color:var(--text-muted);">${_baMd(g.shime)}締め${per ? '・物件ごと' : ''}${hik ? '・' + _invEsc(hik) : ''}</span>
         ${g.early ? `<span style="display:block;color:#e53935;font-weight:700;">⚠️ 締め日（${_baMd(g.shime)}）より前です。このあと同じ締めで完工する分は入りません</span>` : ''}
         ${g.prev ? `<span style="display:block;color:#f57c00;font-weight:700;">⚠️ 前回以前の締めの分（漏れていた分）が${g.prev}件入っています</span>` : ''}
+        ${(() => { const mm = _baMtMismatch({ tr: g.tr, deadline: g.shime, kaisha: g.kaisha, items: g.items }); return mm.length ? `<span style="display:block;color:#e53935;font-weight:700;">${_baMtMismatchText(mm).map(t => '⚠️ ' + _invEsc(t)).join('<br>')}<br><span style="font-weight:400;">　→ 見積りかカレンダーを直すまで、この請求書はCSVを出せません（下書きは作れます）</span></span>` : ''; })()}
         <span style="display:block;color:var(--text-muted);font-size:11px;">${g.items.map(it => _invEsc(it.bukken) + (it.dekiYm ? `（${parseInt(it.dekiYm.slice(5))}月出来高）` : '')).join('、')}</span>
       </span>
       <span style="white-space:nowrap;text-align:right;"><b>${g.items.length}件</b><br><span style="font-family:'DM Mono',monospace;">${formatMoney(g.total)}</span></span>
@@ -15968,6 +15969,7 @@ function openInvoiceList(filter) {
         <span style="margin-left:auto;font-family:'DM Mono',monospace;font-weight:700;">${formatMoney(t.total)}<span style="font-size:10px;font-weight:400;color:var(--text-muted);">（税込）</span></span>
       </div>
       ${inv.early ? '<div style="color:#e53935;font-size:11px;font-weight:700;">⚠️ 締め日前に作った請求書</div>' : ''}
+      ${(() => { if (inv.status === 'fixed') return ''; const tr = _invTr(inv); const mm = tr ? _baMtMismatch({ tr, deadline: inv.shime, kaisha: inv.kaisha, items: inv.items }) : []; return mm.length ? `<div style="color:#e53935;font-size:11px;font-weight:700;">${_baMtMismatchText(mm).map(t => '⚠️ ' + _invEsc(t)).join('<br>')}（直すまでCSVを出せません）</div>` : ''; })()}
       <div style="color:var(--text-muted);font-size:10px;">${inv.csvAt ? 'CSV ' + _baMd(inv.csvAt.slice(0, 10)) + '　' : ''}${inv.fixedAt ? '確定 ' + _baMd(inv.fixedAt.slice(0, 10)) + '　' : ''}楽楽明細の帳票No ${inv.csvNo}</div>
       <details style="margin-top:2px;"><summary style="font-size:11px;color:var(--accent2);cursor:pointer;">中身（${inv.items.length}件）</summary>${items}</details>
       ${btns.length ? `<div style="display:flex;gap:6px;justify-content:flex-end;margin-top:4px;">${btns.join('')}</div>` : ''}
@@ -16042,8 +16044,21 @@ function invExportCsv() {
   const seikyuDate = document.getElementById('inv_seikyuDate').value || _baYmd(new Date());
   const early = sel.filter(v => !v.iko && seikyuDate < v.shime);
   if (early.length && !confirm(`⚠️ 請求日（${_baMd(seikyuDate)}）が締め日より前の請求書があります：\n${early.map(v => `・${v.id} ${v.torihiki}（${_baMd(v.shime)}締め）`).join('\n')}\n\nこのまま出しますか？`)) return;
+  // 【2026-11-26-03】見積りとカレンダーの金額が違う物件があれば、1件も出さない
+  const mmAll = [], preChanged = [];
+  sel.forEach(inv => {
+    const tr = _invTr(inv); if (!tr) return;
+    preChanged.push(..._invRefreshAmounts(inv)); // 今のカレンダーの金額で比べる（変わった分は出力後のお知らせに使う）
+    const mm = _baMtMismatch({ tr, deadline: inv.shime, kaisha: inv.kaisha, items: inv.items });
+    if (mm.length) mmAll.push(`【${inv.id} ${inv.torihiki}】\n` + _baMtMismatchText(mm).map(t => '・' + t).join('\n'));
+  });
+  if (mmAll.length) {
+    alert(`⚠️ 見積りの金額とカレンダーの金額が違う物件があるため、CSVを出しませんでした。\n見積りかカレンダー（予定の金額）のどちらかを直してから、もう一度出してください。\n\n${mmAll.join('\n\n')}`);
+    openInvoiceList();
+    return;
+  }
   let rows = null;
-  const changed = [], noTr = [];
+  const changed = [...preChanged], noTr = [];
   sel.forEach(inv => {
     const tr = _invTr(inv);
     if (!tr) { noTr.push(inv.id); return; }
@@ -16321,6 +16336,19 @@ function _invTagFor(j) {
 //   ・出来高：「物件名（○月出来高）¥その月の金額」の1行
 //   ・売上調整：「メモ ¥金額」の1行（完工日＝計上月末）
 //   ・帳票No：_mtGroupNo（取引先id｜締め日｜会社）。見積りから出す「締めごとにまとめる」と同じ番号になる
+// 【2026-11-26-03】受注の見積りの金額とTSASの売上（カレンダー）の金額が違う物件を返す。
+// 楽楽明細CSVは受注の見積りがあれば見積りの明細・金額を使うため、違うままCSVを出すと売上と請求がずれる
+// （実例：カレンダー480,000円・見積り440,000円 → 楽楽明細に440,000円で入り、480,000円の入金を消し込めなかった）。
+// 請求書を作るとき・一覧で⚠️を出し、CSVを出すとき（請求書機能・請求アラートのカード）は、どちらかを直すまで出せない。
+function _baMtMismatch(card) {
+  try {
+    return _baRakuParts(card).filter(p => p.src === '見積り' && (p.subtotal || 0) !== (p.it.amount || 0))
+      .map(p => ({ bukken: p.it.bukken, mt: p.subtotal || 0, amount: p.it.amount || 0 }));
+  } catch (e) { return []; }
+}
+function _baMtMismatchText(list) {
+  return list.map(x => `${x.bukken}：見積り ${formatMoney(x.mt)} とカレンダー ${formatMoney(x.amount)} が違います`);
+}
 function _baRakuParts(card) {
   const tr = card.tr;
   return card.items.map(it => {
@@ -16343,7 +16371,7 @@ function _baRakuParts(card) {
       const m = won[0];
       const { lines, subtotal } = buildMtPdfLines(m);
       return { it, src: '見積り', m, title: it.bukken, kanko: it.done, period, subtotal: subtotal || 0, lines,
-        note: (subtotal || 0) !== it.amount ? `見積りの金額 ${formatMoney(subtotal || 0)} とTSASの売上 ${formatMoney(it.amount)} が違います` : '',
+        note: (subtotal || 0) !== it.amount ? `見積りの金額 ${formatMoney(subtotal || 0)} とTSASの売上（カレンダー） ${formatMoney(it.amount)} が違います。どちらかを直すまでCSVを出せません` : '',
         dupNote: won.length > 1 ? `受注の見積りが${won.length}件あります（新しいものを使用）` : '' };
     }
     const other = mts.filter(m => (m.status || 'draft') !== 'lost');
@@ -16440,6 +16468,12 @@ function execBaRakurakuCsv() {
   const st = window._baRakuState; if (!st) return;
   const ps = _baRakuChosen();
   if (!ps.length) { showToast('⚠️ 出力するものにチェックがありません', true); return; }
+  // 【2026-11-26-03】見積りとカレンダーの金額が違う物件があれば出さない
+  const mm = ps.filter(p => p.src === '見積り' && (p.subtotal || 0) !== (p.it.amount || 0));
+  if (mm.length) {
+    alert(`⚠️ 見積りの金額とカレンダーの金額が違う物件があるため、CSVを出しませんでした。\n見積りかカレンダー（予定の金額）のどちらかを直してから、もう一度出してください。\n\n${mm.map(p => `・${p.it.bukken}：見積り ${formatMoney(p.subtotal || 0)} とカレンダー ${formatMoney(p.it.amount || 0)} が違います`).join('\n')}`);
+    return;
+  }
   const seikyuDate = document.getElementById('baRaku_seikyuDate').value || _baYmd(new Date());
   const rows = _baRakuRows(st.card, ps, seikyuDate);
   _mtDownloadCsv(rows, `請求書_${(st.card.torihiki || '').replace(/[\\/:*?"<>|]/g, '_')}_${st.card.deadline}締め.csv`);
