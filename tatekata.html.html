@@ -12,7 +12,7 @@
 // ★重要：更新をデプロイして反映を確認したら、必ずこの値を変更してください（日付や連番など何でもOK）。
 // 開いている全員の画面が、この値の変化を数分おきに自動検知して、勝手に再読み込みしてくれます。
 // （「リロードしてください」と一人ずつ声をかけなくても、自動で最新版に切り替わる仕組みです）
-const BUILD_VERSION = '2026-11-26-05';
+const BUILD_VERSION = '2026-11-27-01';
 
 firebase.initializeApp({
   apiKey: "AIzaSyD_yVJymE0OR8LjEAYwt0-5XBuNOQ4K3-s",
@@ -22275,6 +22275,7 @@ function _renderMtCards(el, list) {
         <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
           <span style="font-size:16px;font-weight:900;color:var(--accent);">¥${(m.subtotal||0).toLocaleString()}</span>
           <button class="btn btn-secondary btn-sm" onclick="openMitsumoriEdit(${m.id})">✏️ 編集</button>
+          ${m.type !== 'shanai' ? `<button class="btn btn-secondary btn-sm" onclick="openMitsumoriCopy(${m.id})" title="この見積りの中身で新しい見積りを作る（保存するまで何も作られません）">📋 コピー</button>` : ''}
           <button class="btn btn-secondary btn-sm" onclick="previewMitsumoriPdf(${m.id})">📄 帳票</button>
           <button class="btn btn-sm" style="background:rgba(198,40,40,0.2);color:#ef5350;border:1px solid #ef5350;" onclick="deleteMitsumori(${m.id})">削除</button>
         </div>
@@ -22329,6 +22330,7 @@ function _renderMtTable(el, list) {
       <td style="padding:8px 10px;font-size:13px;font-weight:900;color:var(--accent);text-align:right;">¥${(m.subtotal||0).toLocaleString()}</td>
       <td style="padding:8px 10px;white-space:nowrap;">
         <button class="btn btn-secondary btn-sm" onclick="openMitsumoriEdit(${m.id})" style="font-size:11px;padding:3px 8px;">✏️</button>
+        ${m.type !== 'shanai' ? `<button class="btn btn-secondary btn-sm" onclick="openMitsumoriCopy(${m.id})" title="この見積りの中身で新しい見積りを作る（保存するまで何も作られません）" style="font-size:11px;padding:3px 8px;">📋</button>` : ''}
         <button class="btn btn-secondary btn-sm" onclick="previewMitsumoriPdf(${m.id})" style="font-size:11px;padding:3px 8px;">📄</button>
         <button class="btn btn-secondary btn-sm" onclick="previewMitsumoriPdf(${m.id},'chumonsho')" style="font-size:11px;padding:3px 8px;">📑注</button>
         <button class="btn btn-secondary btn-sm" onclick="previewMitsumoriPdf(${m.id},'ukeisho')" style="font-size:11px;padding:3px 8px;">📑請</button>
@@ -22662,6 +22664,33 @@ function openMitsumoriEdit(id) {
   renderMitsumoriModal(JSON.parse(JSON.stringify(m)));
   document.getElementById('mitsumoriModal').style.display = 'flex';
   document.getElementById('mtModalTitle').textContent = m.type === 'uke' ? '📝 請け見積り編集' : '📝 人工見積り編集';
+}
+// 【2026-11-27-01】見積りのコピー：元の見積りの中身で「新しい見積り」の入力画面を開く（保存するまで何も作られない・元の見積りは変わらない）
+// 引き継ぐ：会社・取引先・担当者・相手の担当者・明細（坪数・単価・追加工事・自由項目・坪数計算・レッカー・交通費など）・コメント・特記事項・支払条件・釘原価
+// 空にする：物件名（同じ取引先・物件名の受注見積りが2件になると請求CSVで⚠️になるため）・工事予定日・請求書番号・請求日・支払期限・請求メモ・原価の実績（人数・その他）
+// 見積日は今日、ステータスは作成中。古いコメント（2026-11-26-05 の見直し前の文）は新しい文に置き換える。社内見積りは対象外
+function openMitsumoriCopy(id) {
+  const src = mitsumoriData.find(x => x.id === id);
+  if (!src || src.type === 'shanai') return;
+  const m = JSON.parse(JSON.stringify(src));
+  m.id = null;
+  m.status = 'draft';
+  m.bukken = '';
+  m.bukkenLink = '';
+  m.date = new Date().toISOString().slice(0, 10);
+  m.kojiStart = ''; m.kojiEnd = '';
+  m.seikyuNo = ''; m.seikyuDate = ''; m.shiharaiKigen = ''; m.seikyuMemo = '';
+  m.genkaNinzuu = ''; m.genkaSonota = '';
+  const renamed = new Map(MT_COMMENT_RENAMED);
+  const cm = [];
+  (src.comments || []).forEach(c => { const n = renamed.get(c) || c; if (!cm.includes(n)) cm.push(n); });
+  m.comments = cm;
+  renderMitsumoriModal(m);
+  document.getElementById('mitsumoriModal').style.display = 'flex';
+  document.getElementById('mtModalTitle').textContent = (m.type === 'uke' ? '📝 請け見積り作成' : '📝 人工見積り作成') + '（コピー）';
+  const bk = document.getElementById('mt_bukken');
+  if (bk) { bk.placeholder = `コピー元：${src.bukken || ''}`; try { bk.focus(); } catch (e) {} }
+  showToast(`📋「${src.bukken || '（物件名なし）'}」をコピーしました。物件名を入れて保存してください`);
 }
 // --- 見積りフォーム：発行会社（TWW/ARK）トグル ---
 function renderMtKaishaToggle(current) {
