@@ -12,7 +12,7 @@
 // ★重要：更新をデプロイして反映を確認したら、必ずこの値を変更してください（日付や連番など何でもOK）。
 // 開いている全員の画面が、この値の変化を数分おきに自動検知して、勝手に再読み込みしてくれます。
 // （「リロードしてください」と一人ずつ声をかけなくても、自動で最新版に切り替わる仕組みです）
-const BUILD_VERSION = '2026-11-27-01';
+const BUILD_VERSION = '2026-11-28-01';
 
 firebase.initializeApp({
   apiKey: "AIzaSyD_yVJymE0OR8LjEAYwt0-5XBuNOQ4K3-s",
@@ -6494,6 +6494,18 @@ function getTotalSales(b) {
   return getBaseSales(b) + (parseInt(b.mitumori_extra) || 0);
 }
 // 年間・半期など「物件全体の合計売上」を返す（月別売上テーブル全月合計優先）
+// 【2026-11-28-01】物件一覧PDF：月をまたぐ物件（月別売上の表に2か月以上の金額がある物件）は、出来高と同じく「総額」も出す。
+// 実例：タシロ｜疋田様邸 9月126,000（未完）・10月222,000 → 請求は合計348,000。経理から「一覧の金額と請求額が違う」と指摘があった。
+// 月別売上の表を使わない物件（工場支援など毎月同じ名前で別々に登録する物件）は対象外（総額に全部の月が合算されるため）。
+// 総額がその月の分と同じなら出さない
+function _pdfIsMatagi(first, ym, amount) {
+  if (!ym) return false;
+  const ms = monthSalesData[first.torihiki + '|' + first.bukken];
+  if (!ms) return false;
+  const months = Object.keys(ms).filter(k => (parseInt(ms[k]) || 0) !== 0);
+  if (months.length < 2) return false;
+  return getTotalSalesAllMonths(first) !== amount;
+}
 function getTotalSalesAllMonths(b) {
   const key = b.torihiki + '|' + b.bukken;
   const msMap = monthSalesData[key];
@@ -9439,7 +9451,7 @@ function openBukkenPdfModal() {
       trueLastDateAll = trueLastDate;
     }
     return { gid, torihiki: first.torihiki, bukken: first.bukken, date: dateStr, isIncomplete, trueLastDate: trueLastDateAll, keyDate: _kd, amount, seikyuState, uriageState, checked: true,
-      dekidaka, dekiYm: ym, contractTotal: dekidaka ? getTotalSalesAllMonths(first) : 0 };
+      dekidaka, dekiYm: ym, contractTotal: (dekidaka || _pdfIsMatagi(first, ym, amount)) ? getTotalSalesAllMonths(first) : 0 };
   }).filter(Boolean);
 
   // 取引先別→日付順でソート
@@ -9497,7 +9509,7 @@ function renderPdfCheckList() {
         <div style="display:flex;gap:4px;margin-top:3px;flex-wrap:wrap;align-items:center;">
           <span style="font-size:11px;color:var(--text-muted);">${dateLabel}</span>
           <span style="font-size:11px;font-weight:700;color:var(--accent);font-family:'DM Mono',monospace;">¥${g.amount.toLocaleString('ja-JP')}</span>
-          ${g.dekidaka && g.dekiYm && g.contractTotal ? `<span style="font-size:10px;color:var(--text-muted);font-family:'DM Mono',monospace;">（総額 ¥${g.contractTotal.toLocaleString('ja-JP')}）</span>` : ''}
+          ${g.dekiYm && g.contractTotal ? `<span style="font-size:10px;color:var(--text-muted);font-family:'DM Mono',monospace;">（総額 ¥${g.contractTotal.toLocaleString('ja-JP')}）</span>` : ''}
           ${sTag}${uTag}
         </div>
       </div>
@@ -9627,7 +9639,7 @@ function execBukkenPdf() {
       : (g.dekidaka && g.isIncomplete && g.dekiYm)
       ? `<span style="color:#1565c0;font-weight:700;font-size:11px;line-height:1.3;">${_kt}</span>`
       : _kt;
-    const amountHtml = (g.dekidaka && g.dekiYm && g.contractTotal)
+    const amountHtml = (g.dekiYm && g.contractTotal)
       ? `¥${g.amount.toLocaleString('ja-JP')}<br><span style="font-size:10px;font-weight:400;color:#888;">総額 ¥${g.contractTotal.toLocaleString('ja-JP')}</span>`
       : `¥${g.amount.toLocaleString('ja-JP')}`;
     return `<tr style="border-bottom:1px solid #e0e0e0;${rowBg}">
